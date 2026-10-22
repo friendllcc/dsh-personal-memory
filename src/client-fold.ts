@@ -1,0 +1,347 @@
+/**
+ * dsh-personal-memory — 反思轮折叠：纯计算逻辑（与 DOM 无关，可单测）。
+ *
+ * 识别：会话快照 chat 节点里 kind='context' 且 source 由本插件生产
+ * （{ kind: 'plugin:dsh-personal-memory' }；旧会话为 { kind: 'plugin', plugin: 'dsh-personal-memory' }）
+ * 的节点 = 反思/dream 轮 prompt
+ * （steer/followup 注入的 user/message 事件，非 append 改写，渲染为 context 行）。
+ * 范围（2026-09-10 双形状）：
+ * - 独立轮（host 走 followup：prompt 即 turn 首节点）：整个 turn 折叠，
+ *   含该轮自己的 turn-tail footer；
+ * - 共享轮（旧会话数据 / 宿主回退 steer）：prompt 所在 turn 内、位于 prompt 之后的
+ *   全部节点（排除 user/steering，防止误折叠反思期间用户插入的消息；保留 turn-tail
+ *   ——它与正常轮工作汇报共用，藏掉会连复制/点赞行一起消失），用快照的
+ *   locations.getTurn(turn) 获取。
+ * 合并：同一 turn 内同 variant 的多个 prompt（dream 多组连着一个 turn，2026-09-10
+ * 用户拍板「一个 dream 任务一个 turn 一根横条」）只出一条横条，锚在首个 prompt，
+ * 覆盖到 turn 末尾。
+ * 计数：范围内 kind='tool' 节点中 memory_remember / memory_update 的调用次数。
+ * 状态：范围内有 running assistant → 进行中；interrupted → 已中断；否则已完成。
+ */
+
+import type { ConversationSnapshot } from '@deepseek-ai/dsh-client-runtime/client'
+import type {
+  AssistantChatData,
+  ChatNode,
+  ToolChatData,
+} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import { t } from './i18n/index.js'
+import { isMeowSource } from './source.js'
+
+/** 测试接点（与 client-delegate-notice 的 setDreamStatesForTest 同款惯例）：界面
+ *  语言。生产代码只读 DSH locale 服务，唯一的写入入口在 i18n core 里。 */
+export { setUiLocaleForTest, getUiLocale } from './i18n/index.js'
+
+/** 反思轮识别标记（与 host 端 reflect.ts / dream.ts 保持一致）。 */
+export const REFLECT_MARKER = '[dsh-personal-memory-reflect]'
+export const DREAM_MARKER = '[dsh-personal-memory-dream]'
+
+/** 插件 source 识别（生产端见 host 端 source.ts）。 */
+export { PLUGIN_NAME } from './source.js'
+
+export type FoldVariant = 'reflect' | 'dream'
+
+export type FoldStatus = 'running' | 'done' | 'interrupted'
+
+/** 一个可折叠的反思/dream 轮。 */
+export interface FoldGroup {
+  /** 起点 context 节点的 key（快照 chat 节点 key，全局唯一）。 */
+  readonly id: string
+  readonly variant: FoldVariant
+  /** 折叠的节点 keys（按渲染顺序；不含 user/steering/turn-tail）。 */
+  readonly keys: readonly string[]
+  /** memory_remember 调用次数（"新增记忆 N 条"）。 */
+  readonly rememberCount: number
+  /** memory_update 调用次数。 */
+  readonly updateCount: number
+  readonly status: FoldStatus
+}
+
+interface ContextLike {
+  readonly source?: unknown
+  readonly content?: readonly { type?: string; text?: string }[]
+}
+
+interface MemorySourceLike {
+  kind?: string
+  plugin?: string
+  form?: string
+  sections?: readonly { name?: string; text?: string }[]
+  memory?: { kind?: 'initial' | 'hit' | 'reinjection' | 'welcome' }
+}
+
+const META_SECTION_NAME = '__meta__'
+
+/** 从 source.sections 提取 __meta__ 元数据（sections 保留在 source 内，与 dsh 快照一致）。 */
+function extractMetaFromSections(
+  sections?: readonly { name?: string; text?: string }[],
+): { kind?: 'initial' | 'hit' | 'reinjection' | 'welcome'; sessionId?: string } | undefined {
+  if (!Array.isArray(sections)) return undefined
+  const raw = sections.find((s) => s?.name === META_SECTION_NAME)?.text
+  if (raw === undefined) return undefined
+  try { return JSON.parse(raw) } catch { return undefined }
+}
+
+/** 从节点 location 提取 turn 号（unresolved/session 定位无法确定时返回 undefined，
+ *  调用方对 undefined 一律跳过=不折叠保持可见）。location 与 location.turn 均做
+ *  缺失防护：异常快照/版本偏差下节点可能无 location（GitHub issue #2），缺失时
+ *  与 unresolved 同路径降级，绝不抛错——computeFoldGroups 在每次渲染都跑，一炸
+ *  就是一整个会话视图。 */
+function turnOf(node: ChatNode): number | undefined {
+  const location = node.location
+  if (location?.kind === 'turn') return location.turn?.turn
+  if (location?.kind === 'step') return location.turn?.turn
+  return undefined
+}
+
+function contextText(node: ChatNode): string {
+  return blocksToText((node.data as ContextLike).content ?? [])
+}
+
+/** 判定节点是否 dsh-personal-memory 注入的反思/dream prompt。 */
+function isMemoryPrompt(node: ChatNode): boolean {
+  if (node.kind !== 'context') return false
+  const source = (node.data as ContextLike).source
+  if (!isMeowSource(source)) return false
+  const text = contextText(node)
+  return text.includes(REFLECT_MARKER) || text.includes(DREAM_MARKER)
+}
+
+/** 从 prompt 文本判定轮次类型（reflect / dream）。 */
+function variantOf(node: ChatNode): FoldVariant {
+  const text = contextText(node)
+  return text.includes(DREAM_MARKER) ? 'dream' : 'reflect'
+}
+
+/** 统计一个工具节点的调用名（memory_remember / memory_update）。
+ *  注意：工具节点的渲染 kind 是 'tool-call'（ui-conversation 的 toolDefinition
+ *  以 chatNode(context, 'tool-call', ...) 发布），不是 'tool'。 */
+function toolNameOf(node: ChatNode): string | undefined {
+  if (node.kind !== 'tool-call') return undefined
+  const root = (node.data as ToolChatData).root
+  if (root === undefined) return undefined
+  if ('name' in root) return root.name // RunningToolCall
+  return root.call?.name // ToolResultNode（窗口截断时 call 可能为 null）
+}
+
+/**
+ * 从会话快照计算全部可折叠组。
+ * @param snapshot - 会话快照（dock 组件收到的 point-in-time 快照）。
+ * @returns 按渲染顺序排列的折叠组。
+ */
+export function computeFoldGroups(snapshot: ConversationSnapshot): FoldGroup[] {
+  // fail-closed：宿主快照形状变化（如旧/新 dsh 前端 chat 缺失）时降级为不折叠，
+  // 绝不抛错炸掉 dock（官方 issue #2 turnOf 同类无保护读教训）。
+  if (snapshot?.chat === undefined) return []
+  const order = snapshot.chat.order
+  const nodes = snapshot.chat.nodes
+  // 同轮同任务合并（2026-09-10）：dream 多组连在同一个 turn 里（第 0 组 followup
+  // 另起轮，后续组 steer 连着），每个组的 prompt 都是独立 context 节点——按
+  // (turn, variant) 只保留首个 prompt 作横条锚点，一组覆盖整个任务。
+  // Map 保插入序 = 渲染序，天然按首个 prompt 排序。
+  const anchors = new Map<string, { key: string; turn: number; variant: FoldVariant }>()
+  for (const key of order) {
+    const node = nodes.get(key)
+    if (node === undefined || !isMemoryPrompt(node)) continue
+    const turn = turnOf(node)
+    if (turn === undefined) continue // 定位未解析（历史窗口外）：不折叠，保持可见
+    const variant = variantOf(node)
+    const mapKey = `${turn}:${variant}`
+    if (anchors.has(mapKey)) continue
+    anchors.set(mapKey, { key, turn, variant })
+  }
+  const groups: FoldGroup[] = []
+  for (const anchor of anchors.values()) {
+    const turnKeys = snapshot.chat.locations.getTurn(anchor.turn)
+    const startIdx = turnKeys.indexOf(anchor.key)
+    // 轮的归属（2026-09-10 双形状）：
+    // - startIdx === 0：独立 memory 轮（host 走 followup，0.1.2/0.1.3+ 都支持）——
+    //   整个 turn 都是 memory 的，turn-tail（该轮自己的复制/耗时 footer）一并折叠，
+    //   展开横条即见；
+    // - startIdx > 0：共享轮（旧会话数据，或宿主无 followup 回退 steer）——prompt
+    //   在正常轮中间，turn-tail 是正常轮工作汇报的操作行，必须保持可见。
+    const ownsTurn = startIdx === 0
+    const keys = turnKeys
+      .slice(startIdx === -1 ? 0 : startIdx)
+      .filter((k) => {
+        const n = nodes.get(k)
+        return n !== undefined && n.kind !== 'user' && n.kind !== 'steering'
+          && (n.kind !== 'turn-tail' || ownsTurn)
+      })
+    let rememberCount = 0
+    let updateCount = 0
+    let status: FoldStatus = 'done'
+    for (const k of keys) {
+      const n = nodes.get(k)
+      if (n === undefined) continue
+      const name = toolNameOf(n)
+      if (name === 'memory_remember') rememberCount++
+      else if (name === 'memory_update') updateCount++
+      if (n.kind === 'assistant') {
+        const data = n.data as AssistantChatData
+        if (data.status === 'running') status = 'running'
+        else if (data.status === 'interrupted' && status !== 'running') status = 'interrupted'
+      }
+    }
+    groups.push({ id: anchor.key, variant: anchor.variant, keys, rememberCount, updateCount, status })
+  }
+  return groups
+}
+
+/** memory 任务占据的 turn 号集合（2026-09-10，0.1.5 右侧 turn 导航条隐藏用）：
+ *  含任一 reflect/dream prompt 的 turn。快照缺 chat 时返回空集。 */
+export function memoryTurnNumbers(snapshot: ConversationSnapshot): ReadonlySet<number> {
+  const out = new Set<number>()
+  if (snapshot?.chat === undefined) return out
+  for (const key of snapshot.chat.order) {
+    const node = snapshot.chat.nodes.get(key)
+    if (node === undefined || !isMemoryPrompt(node)) continue
+    const turn = turnOf(node)
+    if (turn !== undefined) out.add(turn)
+  }
+  return out
+}
+
+/** 横条文案（产品 copy，经 i18n 层：跟随 DSH 语言设置 zh/en/pt-br）。
+ *  dream 运行期带「插话会拼进本轮」提示（issue #20，用户拍板 2026-09-20）：dream 轮
+ *  运行中用户插话会被宿主 steering（next-step）拼进本轮、由同一回复一起消化；横条上
+ *  明说，避免"问题被吞了"的困惑。反思轮不提示——反思通常在长任务收尾排队，插话拼
+ *  进去的困惑远低于 dream（整轮都在做记忆整理）。 */
+export function foldLabel(group: FoldGroup, expanded: boolean): string {
+  const arrow = expanded ? '▾' : '▸'
+  const title = t(group.variant === 'dream' ? 'fold.title.dream' : 'fold.title.reflect')
+  if (group.status === 'running') {
+    const hint = group.variant === 'dream' ? t('fold.hint.running') : ''
+    return `${arrow} ${t('fold.status.running', { title })}${hint}`
+  }
+  if (group.status === 'interrupted') return `${arrow} ${t('fold.status.interrupted', { title })}`
+  if (group.rememberCount > 0) return `${arrow} ${t('fold.status.remembered', { title, n: group.rememberCount })}`
+  if (group.updateCount > 0) return `${arrow} ${t('fold.status.updated', { title, n: group.updateCount })}`
+  return `${arrow} ${t('fold.status.nothing', { title })}`
+}
+
+/** 渲染一个 tool 调用的详情文本：名称 + 格式化参数（JSON pretty）。 */
+export function toolCallDetail(block: { name: string; argsRaw: string }): string {
+  let args = block.argsRaw
+  try {
+    args = JSON.stringify(JSON.parse(block.argsRaw), null, 2)
+  } catch {
+    /* 非 JSON 参数原样展示 */
+  }
+  return args.length > 0 ? `${block.name}\n${args}` : block.name
+}
+
+/** 从 content blocks 提取纯文本（tool result / 消息正文）。 */
+export function blocksToText(blocks: readonly { type?: string; text?: string }[]): string {
+  return blocks
+    .map((block) => block.text ?? '')
+    .join('\n')
+    .trim()
+}
+
+// ── 注入折叠（首轮长期记忆 / 每消息关键词命中） ─────────────────────────────
+
+/** 首轮注入文本的开头标记（与 host 端 buildInjection 保持一致）。 */
+export const FIRST_INJECTION_MARKER = '===== 长期记忆 ====='
+/** 命中注入文本的开头标记（与 host 端 buildHitInjection 保持一致）。 */
+export const HIT_INJECTION_MARKER = '可能相关的记忆，仅供参考：'
+/** 注入文本与用户 prompt 的分隔标记（两种注入都以它结尾）。 */
+export const PROMPT_SEPARATOR = '本轮用户prompt：'
+/** en 语言包（v0.22.0）旧格式分隔符（labels en inject.promptLabel，逐字一致）。 */
+export const EN_PROMPT_SEPARATOR = "This turn's user prompt:"
+
+export type InjectionKind = 'first' | 'hit'
+
+/** 一个可折叠的记忆注入（新格式为独立 context，旧格式为 user 前缀）。 */
+export interface InjectionGroup {
+  /** 要隐藏并在其原位放置横条的节点 key。 */
+  readonly id: string
+  readonly kind: InjectionKind
+  /** 注入的完整文本。 */
+  readonly injectedText: string
+  /** 仅旧格式存在：从被污染 user 消息中拆出的 prompt 原文。 */
+  readonly userText?: string
+  /** 消息事件时间（Unix epoch ms）；缺失时操作行不显示时钟。 */
+  readonly time?: number
+}
+
+/**
+ * 新格式优先识别 source.memory.kind (initial/reinjection/hit) 机器元数据，解耦于自然语言文本；
+ * 兼容未带元数据的 snapshot (中英文标记兜底)；
+ * 旧格式继续识别含注入前缀和分隔符的 user 消息。
+ */
+export function computeInjectionGroups(snapshot: ConversationSnapshot): InjectionGroup[] {
+  if (snapshot?.chat === undefined) return [] // fail-closed：快照无 chat 时不注入折叠，绝不抛错
+  const groups: InjectionGroup[] = []
+  for (const key of snapshot.chat.order) {
+    const node = snapshot.chat.nodes.get(key)
+    if (node === undefined) continue
+    if (node.kind === 'context') {
+      const ctx = node.data as ContextLike
+      const source = ctx.source as MemorySourceLike | undefined
+      if (!isMeowSource(source)) continue
+      // 元数据在 source.sections 的 __meta__ 节（与 dsh 快照一致；host v0.25+ 写入）；
+      // 回退旧 source.memory（v0.24- 历史会话）。
+      const meta = extractMetaFromSections(source.sections) ?? source.memory
+      const memKind = meta?.kind
+      if (memKind === 'initial' || memKind === 'reinjection') {
+        groups.push({ id: key, kind: 'first', injectedText: contextText(node) })
+        continue
+      }
+      if (memKind === 'hit') {
+        groups.push({ id: key, kind: 'hit', injectedText: contextText(node) })
+        continue
+      }
+      // 已知机器元数据但非注入组（如 welcome / delegate 打点）→ 权威跳过，不做文本嗅探，
+      // 避免把首次引导/打点行误折成"关键词命中"。
+      if (meta !== undefined) continue
+      if (source.form === 'snapshot') {
+        const injectedText = contextText(node)
+        const isFirst = injectedText.startsWith(FIRST_INJECTION_MARKER) || injectedText.includes('LONG-TERM MEMORY')
+        groups.push({ id: key, kind: isFirst ? 'first' : 'hit', injectedText })
+      }
+      continue
+    }
+    if (node.kind !== 'user') continue
+    const content = (node.data as { content?: readonly { type?: string; text?: string }[] }).content ?? []
+    if (content.length === 0 || content.some((b) => b.type !== 'text')) continue // 带附件不折叠
+    const text = blocksToText(content)
+    if (text.length === 0) continue
+    let kind: InjectionKind | null = null
+    if (text.startsWith(FIRST_INJECTION_MARKER) || text.includes('LONG-TERM MEMORY') || text.includes('===== 长期记忆 =====')) kind = 'first'
+    else if (text.startsWith(HIT_INJECTION_MARKER) || text.includes('Possibly relevant memories') || text.includes('可能相关的记忆')) kind = 'hit'
+    if (kind === null) continue
+    // en 旧格式分隔符 = labels en inject.promptLabel 实际值（"This turn's user prompt:"，v0.22.0 en 包历史会话）
+    const sep = text.includes(PROMPT_SEPARATOR) ? PROMPT_SEPARATOR : (text.includes(EN_PROMPT_SEPARATOR) ? EN_PROMPT_SEPARATOR : null)
+    if (sep === null) continue // 没有分隔标记（异常数据）：不折叠
+    const sepIdx = text.lastIndexOf(sep)
+    const userText = text.slice(sepIdx + sep.length).replace(/^\n+/, '')
+    const time = typeof (node.data as { time?: unknown }).time === 'number'
+      ? (node.data as { time: number }).time
+      : undefined
+    groups.push({ id: key, kind, injectedText: text.slice(0, sepIdx + sep.length), userText, time })
+  }
+  return groups
+}
+
+/** 注入用户消息的时间标签。与 dsh 本体 formatMessageClock 同规则（同天 HH:mm、
+ *  今年「M/D HH:mm」、跨年「Y/M/D HH:mm」，文案经 i18n 层，跟随 DSH 语言设置），
+ *  供插件自绘的注入消息操作行使用——本体按钮的复制文本闭包含注入前缀，无法直接复用。
+ * @param time - 消息事件时间（Unix epoch ms）。
+ * @param now - 参考时刻（默认当前；测试可注入）。
+ * @returns 时钟字符串（24 小时制补零）。
+ */
+export function formatInjectionClock(time: number, now: number = Date.now()): string {
+  const d = new Date(time)
+  const n = new Date(now)
+  const pad = (value: number): string => String(value).padStart(2, '0')
+  const clock = `${pad(d.getHours())}:${pad(d.getMinutes())}`
+  const sameDay = d.getFullYear() === n.getFullYear()
+    && d.getMonth() === n.getMonth()
+    && d.getDate() === n.getDate()
+  if (sameDay) return clock
+  const md = d.getFullYear() === n.getFullYear()
+    ? t('datetime.ymd', { m: d.getMonth() + 1, d: d.getDate() })
+    : t('datetime.ymdFull', { y: d.getFullYear(), m: d.getMonth() + 1, d: d.getDate() })
+  return `${md} ${clock}`
+}

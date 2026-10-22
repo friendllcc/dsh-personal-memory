@@ -1,0 +1,42 @@
+node_modules/
+lib/
+*.log
+*.bak-*
+*.tgz
+*.tgz.sha256
+_diag*
+_diag-*
+Delete_*
+mytrashbin/
+/.dsh-meow
+/.npm-cache
+/.pr-body.md
+/.pr-body-*.md
+/storage/
+
+# 本地一次性产物（发布物在 GitHub Release 上）
+/_release-notes-*.md
+/_tracked-files.txt
+/_scan-sensitive.cjs
+
+# 一次性诊断/冒烟脚本（保留 check-lang.mjs：npm test 链使用）
+/smoke.mjs
+/verify-client.mjs
+/scripts/diag-*.mjs
+/scripts/locate-load.mjs
+/scripts/mtime-check.mjs
+/scripts/hash-check.mjs
+/scripts/stat-lib.mjs
+/scripts/inspect-client.mjs
+/scripts/inspect-db.mjs
+/scripts/patch-client-banner.mjs
+/scripts/check-fixes.mjs
+/scripts/verify-client.mjs
+/scripts/link-workspace.ps1
+
+# —— 如果决定不保留测试套件，取消下面整段注释 ——
+/test.mjs
+/tests/
+
+# 其他非正式的版本记录
+CHANGELOG.md

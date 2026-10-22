@@ -1,0 +1,51 @@
+# palavras curtas de estrutura do dsh-personal-memory (linhas chave-valor: `- key: value`; o primeiro dois-pontos ASCII + espaço é o separador, o valor é mantido literalmente; uma linha que começa com dois espaços continua o valor anterior; os placeholders {name} são preenchidos pelo código. Esta linha de comentário e as linhas em branco são ignoradas pelo parser.)
+
+- inject.title: ===== MEMÓRIA DE LONGO PRAZO =====
+- inject.end: ===== FIM DA MEMÓRIA DE LONGO PRAZO =====
+- inject.promptLabel: Prompt do usuário neste turno:
+- inject.sectionFormat: [{label}]
+- inject.aboutYou: Sobre você
+- inject.aboutUser: Sobre o usuário
+- inject.rules: Princípios de design
+- inject.guide: Guia de memória
+- inject.guideSearchLine: Use memory_search quando precisar de algo (query é obrigatória, nunca pesquise vazio) e memory_read para ler uma entrada por completo.
+- inject.guideProjectLine: Quando uma tarefa envolver um projeto, comece com memory_project para obter o panorama do projeto (passe o nome do projeto, ele não pode ficar vazio) — é assim que você obtém a compreensão do projeto inteiro.
+- inject.guideProjects: Todos os projetos do usuário: {list}
+- inject.reinjectSection: Sessão compactada
+- inject.reinjectIntro: O contexto anterior desta sessão foi compactado. Abaixo estão as memórias que estavam visíveis nesta sessão antes da compactação e que se perderam junto com ela, todas reconstruídas a partir dos dados mais recentes:
+- inject.writtenSection: Memórias escritas nesta sessão
+- inject.writtenIntro: Texto completo das memórias que você criou/mesclou com memory_remember ou atualizou com memory_update nesta sessão (incluindo as escritas por subagentes em seu nome; entradas archived/concluídas não são reproduzidas):
+- project.global: global
+- inject.hitHeader: Memórias possivelmente relevantes, apenas para referência:
+- dream.title: Tarefa de consolidação de memória (dream)
+- dream.round.atomic: entradas de memória atômicas
+- dream.round.topic: entradas de memória de topic
+- dream.round.project-summary: resumo de projeto
+- dream.listHeader: [Entradas neste grupo]:
+- dream.groupHeader: [project: {name}]
+- dream.groupUnlabeled: sem projeto - informação global, ou faltando o rótulo de projeto
+- dream.row.keywordsLabel: keywords:
+- dream.row.none: (nenhuma)
+- dream.topic.empty: (ainda não há memórias de topic neste grupo — reveja a conversa e, se houver um novo topic, crie-o seguindo a diretriz 2 abaixo)
+- project.unlabeled: sem rótulo
+- project.header: [project: {name}]
+- project.empty: [project: {name}] Ainda não há entradas de memória para este projeto.
+- project.section.overview: Visão geral
+- project.section.structure: Estrutura
+- project.section.decisions: Decisões técnicas
+- project.section.quotes: As palavras do próprio usuário
+- project.section.ops: Implantação e dados
+- project.section.todo: Progresso do projeto
+- project.todoDone: Concluído:
+- project.todoOpen: Lista de tarefas:
+- time.none: sem timestamp
+- time.justNow: agora mesmo
+- time.minutes: há {n} min
+- time.hours: há {n} h
+- time.days: há {n} d
+- reflect.noProjects: (nenhum ainda)
+- remember.error.content: memory_remember: content é obrigatório — acrescente o que você quer lembrar e tente de novo
+- remember.error.project: memory_remember: project é obrigatório — use "{global}" para informações aplicáveis globalmente, ou o nome do projeto (separe vários projetos por vírgula) — acrescente e tente de novo
+- remember.error.keywords: memory_remember: keywords é obrigatório — dê de 8 a 13 palavras-chave de conteúdo para a recuperação (não use o nome do projeto como palavra-chave) — acrescente-as e tente de novo
+- remember.error.keywordsEmpty: memory_remember: keywords chegou, mas não deu para extrair nenhuma palavra-chave dele (recebido {received}) — passe um array de strings, ou o texto das palavras-chave separadas por vírgula, e tente de novo
+- remember.error.importance: memory_remember: importance é obrigatório — avalie: 4=linha vermelha fatal / saúde e segurança, 3=enfatizado pelo usuário / aplicável globalmente, 2=uma decisão do usuário ou uma conclusão abstrata, 1=trivialidade — acrescente e tente de novo

@@ -1,0 +1,51 @@
+# dsh-personal-memory 短框架词（键值行：`- key: value`，首个半角冒号+空格为分隔符，value 原样保留；行首两格缩进为续行；{name} 占位符由代码填充。此注释行与空行会被解析器忽略）
+
+- inject.title: ===== 长期记忆 =====
+- inject.end: ===== 长期记忆结束 =====
+- inject.promptLabel: 本轮用户prompt：
+- inject.sectionFormat: 【{label}】
+- inject.aboutYou: 关于你
+- inject.aboutUser: 关于user
+- inject.rules: 设计原则
+- inject.guide: 记忆导引
+- inject.guideSearchLine: 需要时用 memory_search 检索（必须传 query 检索词，不能空查）、memory_read 读取。
+- inject.guideProjectLine: 当有项目相关任务时，应先用 memory_project 查项目全景（记得带上项目名，不能空参），这样可以对项目有整体理解。
+- inject.guideProjects: 用户的所有 project：{list}
+- project.global: 全局
+- inject.hitHeader: 可能相关的记忆，仅供参考：
+- inject.reinjectSection: 会话已压缩
+- inject.reinjectIntro: 本会话此前的上下文已被压缩。下面是压缩前本会话可见、现已随压缩丢失的记忆，均按当前库最新数据重新整理：
+- inject.writtenSection: 本会话写过的记忆
+- inject.writtenIntro: 你本会话通过 memory_remember 新建/合并、memory_update 更新过的记忆原文如下（含子代理代写；已归档/完结的不回放）：
+- dream.title: 记忆整理任务（dream）
+- dream.round.atomic: 原子记忆条目
+- dream.round.topic: topic记忆条目
+- dream.round.project-summary: 项目总结
+- dream.listHeader: 【本组记忆】：
+- dream.groupHeader: 【project：{name}】
+- dream.groupUnlabeled: 无项目 - 全局信息，或缺少项目标签
+- dream.row.keywordsLabel: 关键词:
+- dream.row.none: （无）
+- dream.topic.empty: （本组暂无已建立的 topic 记忆——回顾对话历史，如有新 topic 请按下方指导 2 创建）
+- project.unlabeled: 未标记
+- project.header: 【项目：{name}】
+- project.empty: 【项目：{name}】该项目暂无记忆条目。
+- project.section.overview: 项目概述
+- project.section.structure: 项目结构
+- project.section.decisions: 技术决策
+- project.section.quotes: 用户原话
+- project.section.ops: 部署与数据
+- project.section.todo: 项目进度
+- project.todoDone: 已完成：
+- project.todoOpen: To do list：
+- time.none: 无时间戳
+- time.justNow: 刚刚
+- time.minutes: {n} 分钟前
+- time.hours: {n} 小时前
+- time.days: {n} 天前
+- reflect.noProjects: （暂无）
+- remember.error.content: memory_remember: content 参数必填，请补充要记住的内容后重试
+- remember.error.project: memory_remember: project 参数必填——全局信息填"{global}"，具体项目填项目名（多个项目用英文逗号分隔），请补充后重试
+- remember.error.keywords: memory_remember: keywords 参数必填——请总结 8-13 个内容关键词供检索（不要用项目名当关键词），请补充后重试
+- remember.error.keywordsEmpty: memory_remember: keywords 参数收到了、但解析不出任何关键词（收到 {received}）——请传字符串数组，或逗号分隔的关键词文本，重试即可
+- remember.error.importance: memory_remember: importance 参数必填——请评估重要性：4=致命红线/健康安全，3=用户强调/全局适用，2=用户决策抽象总结，1=琐碎，请补充后重试
