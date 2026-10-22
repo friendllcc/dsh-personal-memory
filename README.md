@@ -79,6 +79,11 @@ npm test
 
 开发依赖的 `@deepseek-ai/*` 包来自 DSH 宿主源码仓（deepseek-harness monorepo），需先在本机准备好该仓库；`schemastery` 已锁定 3.18.1，请勿升级（配置解析行为有差异，`tests/config-volatile.mjs` 会把关）。
 
+## 关联插件
+依赖本项目个人的长期记忆，可实现两个个性化的功能插件：
+- [dsh-goals](https://github.com/dawn0713/dsh-goals)：个人目标管理，支持跨会话目标规划、步骤管理、每周回顾和条件追踪
+- [dsh-goals](https://github.com/dawn0713/dsh-ideas)：个性化工具，聊过的想法、已经制定的计划和真正开始执行之间，往往还差一个具体动作。你可能知道自己想改善什么，却不确定现在最值得做哪一步，也不想每次都重新交代背景。它把个人记忆、Goals 中的未完成步骤和近期对话整理成下一步建议卡片；你选中一张卡片后，可以在聊天里继续推进你的计划，并查看实际进度、交付产物和后续跟进。
+
 ## 致谢
 
 本项目基于上游 [meow-memory](https://github.com/Phant0Meow/dsh-meow-memory) 改造，感谢上游及每一位贡献者：
