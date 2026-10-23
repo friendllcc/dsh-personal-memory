@@ -99,18 +99,24 @@ export function levelLabel(level: string): string {
 // ── 知识图谱（关键词共现 + 项目归属）──────────────────────────────────────────
 
 export interface GraphNode {
-  /** 'kw:<label>' 或 'prj:<label>' 或中心 ME_NODE_ID（前缀区分同名关键词/项目）。 */
+  /** 'kw:<label>' / 'prj:<label>' / 'ent:<label>' / 中心 ME_NODE_ID。 */
   id: string
   label: string
-  kind: 'keyword' | 'project' | 'me'
-  /** 出现次数（关键词=含它的记忆数；项目=归属它的记忆数；中心=记忆总数）。 */
+  kind: 'keyword' | 'project' | 'me' | 'entity'
+  /** 出现次数（关键词=含它的记忆数；项目=归属它的记忆数；实体=提及它的记忆数）。 */
   count: number
-  /** 该节点记忆的层级分布（着色用主导层）。 */
+  /** 该节点记忆的层级分布（着色用主导层；实体节点改用 entityType 着色）。 */
   levels: Record<string, number>
   /** 关联记忆里最近一次的 updated_at（tooltip「最近更新」；me=全库最新）。 */
   lastUpdated?: number
   /** 关联记忆的 hit_count 总和（tooltip「累计命中」；同一条记忆按关键词/项目数重复计）。 */
   hits?: number
+  /** 实体节点：实体类型（person/health/location/...；决定分类配色）。 */
+  entityType?: string
+  /** 实体节点：来源记忆 id（点击抽屉直接按 id 取，不再靠关键词反查）。 */
+  rowIds?: readonly string[]
+  /** 实体节点：出现在多少条 user/rules 层记忆里（「针对人的重要」信号）。 */
+  userHits?: number
 }
 
 export interface GraphEdge {
@@ -266,20 +272,38 @@ export const ME_NODE_ID = 'me'
  * experience=经验·原则（主导 lesson/rules）；thing=事物（主导 fact/topic/project）。
  * 分类是从既有数据（层级直方图）推导的诚实近似：不做实体抽取，宁缺毋滥。
  */
-export type GraphCategory = 'me' | 'project' | 'person' | 'thing' | 'experience' | 'self'
+export type GraphCategory =
+  | 'me'
+  | 'person'
+  | 'health'
+  | 'event'
+  | 'location'
+  | 'organization'
+  | 'item'
+  | 'project'
+  | 'thing'
+  | 'experience'
+  | 'self'
 
 /** 分类配色（主题无关的柔和固定色板；深浅主题下都可读）。 */
 export const CATEGORY_COLORS: Record<GraphCategory, string> = {
   me: '#6ea8fe', // 柔蓝：我（视觉锚点）
-  person: '#f5b15c', // 琥珀：人物·画像
+  person: '#f5b15c', // 琥珀：人物
+  health: '#ef6a6a', // 红：健康·红线
+  event: '#f59e0b', // 橙：事件·日程
+  location: '#34b58a', // 绿：地点
+  organization: '#38bdf8', // 天蓝：机构
+  item: '#c084fc', // 紫：物品
   project: '#3ec6a0', // 青绿：项目
-  thing: '#a78bfa', // 紫：事物
+  thing: '#a78bfa', // 紫：事物（关键词视图兜底）
   experience: '#f0789a', // 玫红：经验·原则
   self: '#9fb3d1', // 灰蓝：AI 自身
 }
 
-/** 图例展示顺序（我 → 人物 → 项目 → 事物 → 经验 → 自身）。 */
-export const CATEGORY_ORDER: readonly GraphCategory[] = ['me', 'person', 'project', 'thing', 'experience', 'self']
+/** 图例展示顺序（我 → 人物 → 健康 → 事件 → 地点 → 机构 → 物品 → 项目 → 事物 → 经验 → 自身）。 */
+export const CATEGORY_ORDER: readonly GraphCategory[] = [
+  'me', 'person', 'health', 'event', 'location', 'organization', 'item', 'project', 'thing', 'experience', 'self',
+]
 
 // ── 人名形状识别（v0.4.1）────────────────────────────────────────────────────
 // 只认明显形态，不是 NER：① 2–4 个汉字且首字是「安全姓氏」（剔除了与高频词碰撞的
@@ -308,12 +332,19 @@ export function isPersonNameLabel(label: string): boolean {
   return s.length >= 2 && s.length <= 4
 }
 
-/** 节点的语义分类：me/project 由 kind 决定；关键词先过人名形状，再按主导层级映射（空直方图兜底 thing）。 */
-export function nodeCategory(node: Pick<GraphNode, 'kind' | 'levels'> & { label?: string }): GraphCategory {
+/** 节点分类：实体节点直接用 entityType；关键词节点走「人名形状 → 主导层」启发式。 */
+export function nodeCategory(
+  node: Pick<GraphNode, 'kind' | 'levels'> & { label?: string; entityType?: string },
+): GraphCategory {
   if (node.kind === 'me') return 'me'
   if (node.kind === 'project') return 'project'
-  // 人名形状优先于主导层（v0.4.1 用户实证：人名关键词在 fact/topic 层占多数时被误归
-  // 「事物」）。形状判断是诚实近似——不是 NER，只认明显形态，误伤面=颜色标错，不碰数据。
+  // 实体节点：直接用抽取时的类型（这是实体视图比关键词视图精确的根本原因）。
+  if (node.kind === 'entity' && typeof node.entityType === 'string') {
+    const t = node.entityType
+    if (t === 'person' || t === 'health' || t === 'event' || t === 'location' || t === 'organization' || t === 'item' || t === 'project') return t
+    return 'thing'
+  }
+  // 关键词视图（无实体层时的兜底）：人名形状优先于主导层。
   if (typeof node.label === 'string' && isPersonNameLabel(node.label)) return 'person'
   if (!Object.values(node.levels).some((count) => count > 0)) return 'thing'
   const dom = dominantLevel(node.levels)
@@ -329,6 +360,11 @@ export function categoryLabel(cat: GraphCategory): string {
     case 'me': return t('explorer.graph.me')
     case 'project': return t('explorer.graph.legend.project')
     case 'person': return t('explorer.graph.cat.person')
+    case 'health': return t('explorer.graph.cat.health')
+    case 'event': return t('explorer.graph.cat.event')
+    case 'location': return t('explorer.graph.cat.location')
+    case 'organization': return t('explorer.graph.cat.organization')
+    case 'item': return t('explorer.graph.cat.item')
     case 'thing': return t('explorer.graph.cat.thing')
     case 'experience': return t('explorer.graph.cat.experience')
     case 'self': return levelLabel('soul')
@@ -488,6 +524,24 @@ export function rowsForEdge(edge: Pick<GraphEdge, 'source' | 'target' | 'kind'>,
   const a = byId.get(edge.source)
   const b = byId.get(edge.target)
   if (a === undefined || b === undefined) return []
+  // 实体节点：直接按来源记忆 id 求交（实体名未必等于任何关键词，反查会漏）。
+  const entityRows = (n: GraphNode): readonly string[] | null =>
+    n.kind === 'entity' && Array.isArray(n.rowIds) ? n.rowIds : null
+  const ea = entityRows(a)
+  const eb = entityRows(b)
+  if (ea !== null || eb !== null) {
+    let out = [...rows]
+    if (ea !== null) {
+      const set = new Set(ea)
+      out = out.filter((row) => set.has(row.id))
+    }
+    if (eb !== null) {
+      const set = new Set(eb)
+      out = out.filter((row) => set.has(row.id))
+    }
+    out.sort((x, y) => y.updated_at - x.updated_at)
+    return out
+  }
   const kwOf = (n: GraphNode): string | null => (n.kind === 'keyword' ? n.label : null)
   const prjOf = (n: GraphNode): string | null => (n.kind === 'project' ? n.label : null)
   const hasKw = (row: ExplorerRow, kw: string): boolean => {
@@ -563,10 +617,17 @@ export function filterGraphByDepth(graph: MemoryGraph, depths: ReadonlyMap<strin
  * - 项目节点 → project 多值字段含该项目名的行。
  * 返回按 updated_at 倒序（最近活跃在前）。
  */
-export function rowsForNode(node: Pick<GraphNode, 'kind' | 'label'>, rows: readonly ExplorerRow[]): ExplorerRow[] {
+export function rowsForNode(
+  node: Pick<GraphNode, 'kind' | 'label'> & { rowIds?: readonly string[] },
+  rows: readonly ExplorerRow[],
+): ExplorerRow[] {
   let out: ExplorerRow[]
   if (node.kind === 'me') {
     out = [...rows]
+  } else if (node.kind === 'entity' && Array.isArray(node.rowIds)) {
+    // 实体节点自带来源记忆 id —— 不再靠关键词反查（实体名可能不等于任何一个关键词）。
+    const ids = new Set(node.rowIds)
+    out = rows.filter((row) => ids.has(row.id))
   } else if (node.kind === 'keyword') {
     const kw = node.label.toLowerCase()
     out = rows.filter((row) => row.keywords.some((k) => k.toLowerCase() === kw))
@@ -608,32 +669,49 @@ export function computeGraphLayout(
   if (nodes.length === 0) return pos
   const cx = width / 2
   const cy = height / 2
-  const radius = (Math.min(width, height) / 2) * 0.78
-  nodes.forEach((node, i) => {
-    if (node.id === pinToCenter) {
-      pos.set(node.id, { x: cx, y: cy })
-      return
-    }
-    const angle = (2 * Math.PI * i) / nodes.length
-    pos.set(node.id, { x: cx + radius * Math.cos(angle), y: cy + radius * Math.sin(angle) })
+  const radius = (Math.min(width, height) / 2) * 0.82
+  // 按类型分扇区撒种：同类一开始就聚在一起、不同类彼此分开。力导只做微调，
+  // 这样多个簇不会挤成一团（v0.4.4 用户反馈「图看着好挤」）。
+  const seedGroups = new Map<GraphCategory, string[]>()
+  for (const node of nodes) {
+    if (node.id === pinToCenter) continue
+    const cat = nodeCategory(node)
+    const list = seedGroups.get(cat) ?? []
+    list.push(node.id)
+    seedGroups.set(cat, list)
+  }
+  const seedCats = CATEGORY_ORDER.filter((cat) => seedGroups.has(cat))
+  seedCats.forEach((cat, ci) => {
+    const list = seedGroups.get(cat) ?? []
+    const base = -Math.PI / 2 + (ci * 2 * Math.PI) / Math.max(1, seedCats.length)
+    const spread = list.length > 1 ? Math.min(0.55, 2 / list.length) : 0
+    list.forEach((id, i) => {
+      const angle = base + (i - (list.length - 1) / 2) * spread
+      const rr = radius * (0.72 + 0.16 * (i % 2))
+      pos.set(id, { x: cx + rr * Math.cos(angle), y: cy + rr * Math.sin(angle) })
+    })
   })
+  if (pinToCenter !== undefined) pos.set(pinToCenter, { x: cx, y: cy })
   if (nodes.length === 1) {
     pos.set(nodes[0].id, { x: cx, y: cy })
     return pos
   }
+  const catOf = new Map<string, GraphCategory>()
+  for (const node of nodes) catOf.set(node.id, nodeCategory(node))
 
   // 边类型力学系数（见函数 docstring）
   const EDGE_MECHANICS: Record<GraphEdge['kind'], { spring: number; lenScale: number }> = {
-    mine: { spring: 0.06, lenScale: 1.0 },
-    project: { spring: 0.09, lenScale: 0.85 },
-    cooc: { spring: 0.045, lenScale: 1.25 },
+    mine: { spring: 0.052, lenScale: 1.05 },
+    project: { spring: 0.082, lenScale: 0.9 },
+    cooc: { spring: 0.04, lenScale: 1.35 },
   }
   const edgeList = edges.map((e) => {
     const mech = EDGE_MECHANICS[e.kind] ?? EDGE_MECHANICS.cooc
-    return { ...e, len: Math.max(46, 108 - 12 * (e.weight - 1)) * mech.lenScale, spring: mech.spring }
+    return { ...e, len: Math.max(54, 120 - 12 * (e.weight - 1)) * mech.lenScale, spring: mech.spring }
   })
-  const pad = 26
-  const repulse = 5200
+  const pad = 36
+  const repulse = 7600
+  const CATEGORY_REPULSION = { same: 0.8, other: 1.8 }
   for (let iter = 0; iter < iterations; iter++) {
     const temp = 1 - iter / iterations // 冷却：步长随轮次收缩
     const disp = new Map<string, GraphPoint>()
@@ -646,7 +724,10 @@ export function computeGraphLayout(
         const dx = a.x - b.x
         const dy = a.y - b.y
         const dSq = dx * dx + dy * dy + 40 // +40 防零距爆炸
-        const f = repulse / dSq
+        // 异类之间额外斥力：让「人物 / 健康 / 地点 / 事件」这些簇彼此拉开，
+        // 同类之间减弱斥力让它们抱团。
+        const same = catOf.get(nodes[i].id) === catOf.get(nodes[j].id)
+        const f = (repulse * (same ? CATEGORY_REPULSION.same : CATEGORY_REPULSION.other)) / dSq
         const d = Math.sqrt(dSq)
         const ux = dx / d
         const uy = dy / d
@@ -681,8 +762,8 @@ export function computeGraphLayout(
         continue
       }
       const d = disp.get(node.id)!
-      const toCxDx = (cx - p.x) * 0.004
-      const toCyDy = (cy - p.y) * 0.004
+      const toCxDx = (cx - p.x) * 0.0025
+      const toCyDy = (cy - p.y) * 0.0025
       let nx = p.x + (d.x + toCxDx) * temp
       let ny = p.y + (d.y + toCyDy) * temp
       if (!Number.isFinite(nx) || !Number.isFinite(ny)) {
@@ -692,6 +773,41 @@ export function computeGraphLayout(
       p.x = Math.min(Math.max(nx, pad), width - pad)
       p.y = Math.min(Math.max(ny, pad), height - pad)
     }
+  }
+
+  // 碰撞分离：标签/节点重叠是「挤」的直接观感。迭代后再推几轮，保证最小间距。
+  const minSep = 34
+  const clamp = (v: number, max: number): number => Math.min(Math.max(v, pad), max - pad)
+  for (let pass = 0; pass < 4; pass++) {
+    let moved = false
+    for (let i = 0; i < nodes.length; i++) {
+      if (nodes[i].id === pinToCenter) continue
+      for (let j = i + 1; j < nodes.length; j++) {
+        if (nodes[j].id === pinToCenter) continue
+        const a = pos.get(nodes[i].id)!
+        const b = pos.get(nodes[j].id)!
+        let dx = a.x - b.x
+        let dy = a.y - b.y
+        let d = Math.sqrt(dx * dx + dy * dy)
+        if (d >= minSep) continue
+        if (d < 0.01) {
+          // 完全重合：按索引给一个确定性的分离方向
+          const angle = ((i * 37 + j * 19) % 360) * (Math.PI / 180)
+          dx = Math.cos(angle)
+          dy = Math.sin(angle)
+          d = 1
+        }
+        const push = (minSep - d) / 2
+        const ux = dx / d
+        const uy = dy / d
+        a.x = clamp(a.x + ux * push, width)
+        a.y = clamp(a.y + uy * push, height)
+        b.x = clamp(b.x - ux * push, width)
+        b.y = clamp(b.y - uy * push, height)
+        moved = true
+      }
+    }
+    if (!moved) break
   }
   return pos
 }
