@@ -12,7 +12,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { Doc } from './bm25.js'
-import { keywordHitScore, search, tokenize } from './bm25.js'
+import { ARCHIVED_DEMOTE, keywordHitScore, search, STALE_DEMOTE, tokenize } from './bm25.js'
 import { activeHomeDir } from './home-dir.js'
 import { isGlobalProject, isGlobalScope, memoryDbPath, projectCovers, projectLabel, relativeTime, PROJECT_SUBCATEGORIES, type Level, type MemoryDb, type MemoryRow, type ProjectSubcategory } from './db.js'
 import { fillTemplate, keyedValue } from './prompt-loader.js'
@@ -534,11 +534,13 @@ export function buildReinjection(
  */
 export function recallPool(db: MemoryDb, workspace: string, sessionId: string, dir = '.dsh-personal-memory'): MemoryRow[] {
   const currentProject = readSeenFile(workspace, sessionId, dir).currentProject
+  // 三种状态都参与命中：stale=已完成（0.7）、archived=可能过时（0.4），只是降权。
+  const searchable = (level: Level): MemoryRow[] => db.list(level)
   return [
-    ...db.list('fact', { status: 'active' }),
-    ...db.list('lesson', { status: 'active' }),
-    ...db.list('rules', { status: 'active' }),
-    ...db.list('topic', { status: 'active' }),
+    ...searchable('fact'),
+    ...searchable('lesson'),
+    ...searchable('rules'),
+    ...searchable('topic'),
   ].filter((r) =>
     (isGlobalScope(r.project) || (currentProject !== null && projectCovers(r.project, currentProject)))
     && r.source_session !== sessionId, // 本 session 建立的记忆在上下文里，不命中
@@ -552,15 +554,22 @@ function hitQuery(
   userText: string,
   o: InjectOptions,
   dir: string,
-): Array<{ id: string; level: string; content: string; updated_at: number | null }> {
+): Array<{ id: string; level: string; content: string; project: string | null; updated_at: number | null; status: string }> {
   const hitRows = recallPool(db, workspace, sessionId, dir)
   if (hitRows.length === 0) return []
   const query = userText.slice(0, 500)
-  const docs = toDocs(hitRows).map((d) => ({
-    ...d,
-    // 匹配面 = 条目关键词（LLM 提取或自动 bigram；无关键词的旧条目回退内容前 100 字）。
-    content: d.keywords.length > 0 ? d.keywords.join(' ') : d.content.slice(0, 100),
-  }))
+  const rowById = new Map(hitRows.map((r) => [r.id, r]))
+  const docs = toDocs(hitRows).map((d) => {
+    const row = rowById.get(d.id)
+    return {
+      ...d,
+      // 匹配面 = 条目关键词（LLM 提取或自动 bigram；无关键词的旧条目回退内容前 100 字）。
+      content: d.keywords.length > 0 ? d.keywords.join(' ') : d.content.slice(0, 100),
+      // 正文以 0.45 权重补充（关键词漏词时兜底；无关键词时 content 已经是正文，不重复）。
+      body: d.keywords.length > 0 ? d.content : undefined,
+      demote: row?.status === 'archived' ? ARCHIVED_DEMOTE : row?.status === 'stale' ? STALE_DEMOTE : 1,
+    }
+  })
   // 命中专用打分：交集×覆盖率×艾宾浩斯(updated_at)×importance×title 加成（艾宾浩斯开着）。
   const hits = keywordHitScore(query, docs, { k: o.hitTopK })
   const byId = new Map(hitRows.map((r) => [r.id, r]))
@@ -569,7 +578,14 @@ function hitQuery(
     .filter((h) => !readInjected(workspace, sessionId, dir).includes(h.id))
     .map((h) => {
       const row = byId.get(h.id)
-      return { id: h.id, level: h.level, content: row?.content ?? h.content, project: row?.project ?? null, updated_at: row?.updated_at ?? null }
+      return {
+        id: h.id,
+        level: h.level,
+        content: row?.content ?? h.content,
+        project: row?.project ?? null,
+        updated_at: row?.updated_at ?? null,
+        status: row?.status ?? 'active',
+      }
     })
 }
 
@@ -599,7 +615,8 @@ export function buildHitInjection(
     const time = h.updated_at
       ? ` ${new Date(h.updated_at).toISOString().slice(0, 16).replace('T', ' ')} [${relativeTime(h.updated_at)}]`
       : ''
-    lines.push(`[${proj} : ${h.level}] [${h.id}]${time}`)
+    const st = h.status !== 'active' ? ` [${h.status}]` : ''
+    lines.push(`[${proj} : ${h.level}] [${h.id}]${time}${st}`)
     lines.push(h.content)
     lines.push('')
   }
@@ -629,13 +646,14 @@ export function buildRecallInjection(
   for (const h of ranked) {
     if (injected.includes(h.id)) continue
     const found = db.findById(h.id)
-    if (found === undefined || found.row.status !== 'active') continue
+    if (found === undefined) continue
     const row = found.row
     const proj = projectLabel(row.project)
     const time = row.updated_at
       ? ` ${new Date(row.updated_at).toISOString().slice(0, 16).replace('T', ' ')} [${relativeTime(row.updated_at)}]`
       : ''
-    lines.push(`[${proj} : ${row.level}] [${row.id}]${time}`)
+    const st = row.status !== 'active' ? ` [${row.status}]` : ''
+    lines.push(`[${proj} : ${row.level}] [${row.id}]${time}${st}`)
     lines.push(row.content)
     lines.push('')
     ids.push(row.id)

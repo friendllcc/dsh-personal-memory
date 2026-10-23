@@ -489,12 +489,11 @@ export class MemoryDb {
   /** 可检索条目：active 全部；project.subcategory='todo' 的 stale 视为 done 参与检索。
    *  （用户拍板：todo 过时=finish 可检索，其他类别过时不检索。） */
   listSearchable(level: Level): MemoryRow[] {
-    const active = this.list(level, { status: 'active' })
-    if (level !== 'project') return active
-    const todoDone = (
-      this.db.prepare(`SELECT * FROM project WHERE status = 'stale' AND subcategory = 'todo'`).all() as Record<string, unknown>[]
-    ).map((r) => this.fromRow('project', r))
-    return [...active, ...todoDone]
+    // 三种状态都进检索面：active / stale（已完成）/ archived（可能过时）。
+    // 旧实现只取 active（+ 项目 todo stale）：dream 把「疗程已完成」标 stale、
+    // 把「疗程已结束」归档之后，用户问「还在吃吗」就彻底搜不到答案。
+    // 时效性只影响排序权重（见 bm25 的 STALE_DEMOTE / ARCHIVED_DEMOTE），不该让记忆消失。
+    return this.list(level)
   }
 
   bumpHit(level: Level, id: string): void {

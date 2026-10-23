@@ -10,7 +10,7 @@
 
 import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { isAbsolute, resolve } from 'node:path'
-import { findSimilar, search, tokenize, type RankedHit } from './bm25.js'
+import { ARCHIVED_DEMOTE, findSimilar, search, STALE_DEMOTE, tokenize, type RankedHit } from './bm25.js'
 import { getDb, getDreamWorkspace, globalProjectMarker, isGlobalProject, projectCovers, projectLabel, projectList, relativeTime, type Level, LEVELS, type MemoryPatch, type MemoryRow, type ProjectSubcategory, PROJECT_SUBCATEGORIES } from './db.js'
 import { mergeRankings, semanticRank, type SemanticRuntime } from './semantic.js'
 import { fillTemplate, keyedValue } from './prompt-loader.js'
@@ -387,13 +387,14 @@ function searchTool(dir: string): ToolDefinition {
                 project: { type: 'string', description: T('memory_search.out.hits.project') },
                 score: { type: 'number' },
                 updated_at: { type: 'number', description: T('memory_search.out.hits.updated_at') },
+                status: { type: 'string', description: 'active / stale（已完成）/ archived（可能过时，需自行判断是否仍适用）' },
               },
             },
           },
         },
       },
       render: (_args, value) => {
-        const v = value as { note?: string; hits?: Array<{ id?: string; level?: string; content?: string; keywords?: unknown; project?: string | null; updated_at?: number | null }> }
+        const v = value as { note?: string; hits?: Array<{ id?: string; level?: string; content?: string; keywords?: unknown; project?: string | null; updated_at?: number | null; status?: string }> }
         const lines = [String(v.note ?? '')]
         for (const h of v.hits ?? []) {
           // 检索元数据视图：归属 + id + 相对时间 + 关键词（无关键词回退原文开头）；原文内容不显示。
@@ -402,7 +403,8 @@ function searchTool(dir: string): ToolDefinition {
           // 归属显示：'全局'=真全局；null=未标记（可能是数据 bug）；多值 join '/'（如 dsh/femo）。
           const proj = `${projectLabel(h.project)} : ${String(h.level ?? '')}`
           const rel = relativeTime(h.updated_at ?? null)
-          lines.push(`[${proj}] [${String(h.id ?? '')}] [${rel}] 关于：${about}`)
+          const st = h.status && h.status !== 'active' ? ` [${h.status}]` : ''
+          lines.push(`[${proj}] [${String(h.id ?? '')}] [${rel}]${st} 关于：${about}`)
         }
         return lines.map((t) => ({ type: 'text' as const, text: t }))
       },
@@ -456,6 +458,8 @@ function searchTool(dir: string): ToolDefinition {
         importance: r.importance,
         created_at: r.created_at,
         updated_at: r.updated_at,
+        // 时效性只降权、不排除：stale=已完成 0.7，archived=可能过时 0.4
+        demote: r.status === 'archived' ? ARCHIVED_DEMOTE : r.status === 'stale' ? STALE_DEMOTE : 1,
       }))
       // 全量排名（分高到低）后分段选取（用户拍板 2026-08-19）：
       //   前 5 条无脑取（不排除任何记忆，含已见/本 session 建立的）；
@@ -512,6 +516,7 @@ function searchTool(dir: string): ToolDefinition {
             project: row?.project ?? '',
             score: Math.round(h.score * 100) / 100,
             updated_at: h.updated_at ?? 0,
+            status: row?.status ?? 'active',
           }
         }),
       }

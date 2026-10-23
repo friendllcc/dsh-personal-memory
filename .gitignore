@@ -42,6 +42,7 @@ mytrashbin/
 /tests/*
 !/tests/client-entities.mjs
 !/tests/client-entity-graph.mjs
+!/tests/retrieval.mjs
 
 # 其他非正式的版本记录
 CHANGELOG.md

@@ -24,7 +24,18 @@ export interface Doc {
   created_at: number
   /** 记忆时间戳 = 最后更新时间（艾宾浩斯按它算年龄）。 */
   updated_at: number
+  /** 命中降权（1=正常；归档 0.4）。归档 ≠ 错误，仍要能被检索到。 */
+  demote?: number
+  /** 正文（命中链路的低权重补充面；search() 不用它，BM25 本来就算全文）。 */
+  body?: string
 }
+
+/** 归档降权系数：归档只是「可能不再适用」，不能让答案本身彻底搜不到。 */
+export const ARCHIVED_DEMOTE = 0.4
+/** 正文命中权重：关键词命中算全分，只在正文出现算 0.45（防「顺带提一句」上榜）。 */
+export const BODY_HIT_WEIGHT = 0.45
+/** 已完成（stale）降权：still true，「疗程已完成」正是问「还在吃吗」时要找的答案。 */
+export const STALE_DEMOTE = 0.7
 
 // CJK 类：汉字（\p{Script=Han} 覆盖基本区+Ext A~I）+ 假名 + 日文词内符号（々 叠字 / ー
 // 长音符——script=Common，但必须随 CJK run，"人々/タワー"才能整体成词）
@@ -294,7 +305,7 @@ export function search(query: string, docs: Doc[], opts: SearchOptions = {}): Ra
       content: docs[di].content,
       importance: docs[di].importance,
       updated_at: docs[di].updated_at,
-      score: raw[di] * w,
+      score: raw[di] * w * (docs[di].demote ?? 1),
     })
   }
   hits.sort((a, b) => b.score - a.score)
@@ -303,13 +314,15 @@ export function search(query: string, docs: Doc[], opts: SearchOptions = {}): Ra
 
 /**
  * 关键词命中打分（每消息命中链路专用）：
- *   score = 交集分 × 覆盖率 × 艾宾浩斯(updated_at) × importance 权重 × title 加成
- * - 匹配面 = 调用方准备的 docs.content（记忆 keywords 串，或旧条目回退的内容片段）+ title；
- *   query = 用户消息全文 bigram；
- * - 交集分 = Σ(命中的词条 × query 词频 × idf)——稀有词命中含金量高；
- * - 覆盖率 = 命中词条数 / 该记忆匹配面词条总数——防"一个词碰瓷上榜"；
- * - 艾宾浩斯按记忆时间戳（updated_at）衰减，importance≥3 或超级匹配（≥0.85×本轮最高交集分）豁免；
- * - importance 权重 = 1 + (importance-1)×0.25（3 星 ×1.5）；title 被命中 ×1.2。
+ *   score = (关键词交集 + 正文交集×0.45) × 覆盖率 × 艾宾浩斯 × importance × title × demote
+ *
+ * 三处按评测 badcase 修正（2026-10-23）：
+ *   ① 覆盖率分母 = **查询的唯一词数**，不是文档词数。旧口径下「记忆越长越难命中」
+ *      （关键词丰富反而吃亏），一条写得详细的记忆会被短条目系统性压掉。
+ *   ② 正文以 0.45 权重参与匹配：只在 keywords 里找时，提取漏一个词就永远命中不了；
+ *      但正文与关键词等权又会把「顺带提一句」的条目拉上来。
+ *   ③ 归档 ×0.4 仍可检索：dream 把「疗程已结束」归档后，用户问「还在吃吗」必须还能
+ *      找到这条答案（旧实现归档 = 彻底消失）。
  */
 export function keywordHitScore(query: string, docs: Doc[], opts: SearchOptions = {}): RankedHit[] {
   const k = opts.k ?? 2
@@ -318,30 +331,35 @@ export function keywordHitScore(query: string, docs: Doc[], opts: SearchOptions 
   if (q.length === 0 || docs.length === 0) return []
   const qTf = new Map<string, number>()
   for (const t of q) qTf.set(t, (qTf.get(t) ?? 0) + 1)
+  const qUniq = qTf.size
 
   const n = docs.length
-  const docToks = docs.map((d) => tokenize([d.content, d.title ?? ''].join(' ')))
-  const df = new Map<string, number>()
-  const tf: Array<Map<string, number>> = []
-  for (const toks of docToks) {
+  const tfMap = (tokens: string[]): Map<string, number> => {
     const m = new Map<string, number>()
-    const seen = new Set<string>()
-    for (const t of toks) {
-      m.set(t, (m.get(t) ?? 0) + 1)
-      if (!seen.has(t)) {
-        seen.add(t)
-        df.set(t, (df.get(t) ?? 0) + 1)
-      }
-    }
-    tf.push(m)
+    for (const t of tokens) m.set(t, (m.get(t) ?? 0) + 1)
+    return m
   }
+  const kwTf = docs.map((d) => tfMap(tokenize([d.content, d.title ?? ''].join(' '))))
+  const bodyTf = docs.map((d) => (d.body ? tfMap(tokenize(d.body)) : new Map<string, number>()))
+
+  // df 按「关键词面 ∪ 正文面」的唯一词统计：idf 只算一次，两个面共用
+  const df = new Map<string, number>()
+  docs.forEach((_, di) => {
+    const seen = new Set<string>()
+    for (const t of kwTf[di].keys()) if (!seen.has(t)) { seen.add(t); df.set(t, (df.get(t) ?? 0) + 1) }
+    for (const t of bodyTf[di].keys()) if (!seen.has(t)) { seen.add(t); df.set(t, (df.get(t) ?? 0) + 1) }
+  })
   const idf = (t: string): number =>
     Math.log(1 + (n - (df.get(t) ?? 0) + 0.5) / ((df.get(t) ?? 0) + 0.5))
 
   const raw: number[] = docs.map((_, di) => {
     let s = 0
     for (const [t, f] of qTf) {
-      if (tf[di].has(t)) s += idf(t) * f
+      const inKw = kwTf[di].has(t)
+      const inBody = bodyTf[di].has(t)
+      if (!inKw && !inBody) continue
+      // 同一个词两个面都出现不叠加：关键词优先（1.0），只有正文才 0.45
+      s += idf(t) * f * (inKw ? 1 : BODY_HIT_WEIGHT)
     }
     return s
   })
@@ -349,10 +367,10 @@ export function keywordHitScore(query: string, docs: Doc[], opts: SearchOptions 
   const out: RankedHit[] = []
   for (let di = 0; di < docs.length; di++) {
     if (raw[di] <= 0) continue
-    const len = docToks[di].length
+    // 覆盖率 = 命中词数 / 查询唯一词数（缺陷①）
     let overlap = 0
-    for (const t of qTf.keys()) if (tf[di].has(t)) overlap++
-    const coverage = len > 0 ? overlap / len : 0
+    for (const t of qTf.keys()) if (kwTf[di].has(t) || bodyTf[di].has(t)) overlap++
+    const coverage = qUniq > 0 ? overlap / qUniq : 0
     let w = 1
     if (now !== null && docs[di].importance < 3 && !(raw[di] >= 0.85 * maxRaw)) {
       w = recencyWeight(now - docs[di].updated_at)
@@ -366,7 +384,7 @@ export function keywordHitScore(query: string, docs: Doc[], opts: SearchOptions 
       content: docs[di].content,
       importance: docs[di].importance,
       updated_at: docs[di].updated_at,
-      score: raw[di] * coverage * w * impW * (titleHit ? 1.2 : 1),
+      score: raw[di] * coverage * w * impW * (titleHit ? 1.2 : 1) * (docs[di].demote ?? 1),
     })
   }
   out.sort((a, b) => b.score - a.score)

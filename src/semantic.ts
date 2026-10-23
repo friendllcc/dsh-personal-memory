@@ -14,6 +14,7 @@
  */
 
 import { createHash } from 'node:crypto'
+import { ARCHIVED_DEMOTE, STALE_DEMOTE } from './bm25.js'
 import { LEVELS, type Level, type MemoryDb, type MemoryRow } from './db.js'
 
 export interface SemanticConfig {
@@ -245,14 +246,16 @@ export function semanticRank(
   db: MemoryDb,
   cfg: SemanticConfig,
   queryVec: Float32Array,
-  candidates: ReadonlyArray<Pick<MemoryRow, 'level' | 'id' | 'title' | 'content'>>,
+  candidates: ReadonlyArray<Pick<MemoryRow, 'level' | 'id' | 'title' | 'content' | 'status'>>,
 ): SemanticHit[] {
   const scored: SemanticHit[] = []
   for (const c of candidates) {
     const e = db.getEmbedding(c.level, c.id)
     if (e === undefined || e.model !== cfg.model) continue
     if (e.hash !== contentHashOf(c.title, c.content)) continue
-    const score = cosine(queryVec, e.vector)
+    // 时效性只降权、不排除（与 BM25 同口径）：stale=已完成 0.7，archived=可能过时 0.4
+    const demote = c.status === 'archived' ? ARCHIVED_DEMOTE : c.status === 'stale' ? STALE_DEMOTE : 1
+    const score = cosine(queryVec, e.vector) * demote
     if (score >= cfg.minScore) scored.push({ level: c.level, id: c.id, score })
   }
   scored.sort((a, b) => b.score - a.score || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
