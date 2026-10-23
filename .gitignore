@@ -40,9 +40,10 @@ mytrashbin/
 # 实体图谱的纯函数测试随源码保留（其余测试仍按上面的约定忽略）
 !/tests/
 /tests/*
-!/tests/client-entities.mjs
-!/tests/client-entity-graph.mjs
 !/tests/retrieval.mjs
 
 # 其他非正式的版本记录
 CHANGELOG.md
+
+# 本地预览图（不发布）
+/preview-*.svg

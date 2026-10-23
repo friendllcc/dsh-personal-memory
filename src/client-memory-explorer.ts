@@ -29,6 +29,7 @@ import { createElement, useCallback, useEffect, useMemo, useRef, useState, useSy
 import { createPortal } from 'react-dom'
 import { onUiLocaleChange, t } from './i18n/index.js'
 import {
+  buildPersonalGraph,
   cardSnippet,
   cardTitle,
   CATEGORY_COLORS,
@@ -65,12 +66,10 @@ import {
   type RowFilter,
   type SortMode,
 } from './client-memory-graph.ts'
-import { buildEntityOverview } from './client-entities.ts'
 import { acquireSettingsScope, injectSettingsCss, MemorySettingsSection } from './settings-page.ts'
 
 /** 面板 API 基址（host 端 tryRegisterDreamRoutes 注册的六个路由）。 */
 const API_BASE = '/dsh-personal-memory/api'
-
 
 const BOOK_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>'
 
@@ -287,15 +286,11 @@ const EXPLORER_CSS = `
   margin-bottom: 10px;
 }
 .meow-explorer-graphwrap { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; padding: 8px; }
-.meow-explorer-graphhost { position: relative; width: 100%; height: 100%; min-height: 0; display: flex; align-items: center; justify-content: center; }
-.meow-explorer-graph { width: 100%; height: 100%; cursor: grab; border-radius: 12px; background: radial-gradient(circle at 50% 45%, rgba(110,168,254,.06), transparent 62%); }
-.meow-explorer-zoombar { position: absolute; right: 10px; top: 10px; display: flex; flex-direction: column; gap: 4px; }
-.meow-explorer-zoombar button { width: 26px; height: 26px; padding: 0; border: 1px solid rgba(127,127,127,.28); border-radius: 7px; background: var(--dsw-alias-button-elevated-fill, rgba(127,127,127,.12)); color: inherit; cursor: pointer; font: inherit; font-size: 14px; line-height: 1; opacity: .8; }
-.meow-explorer-zoombar button:hover { opacity: 1; border-color: rgba(110,168,254,.55); }
+.meow-explorer-graph { width: 100%; height: 100%; cursor: grab; }
 .meow-explorer-graph[data-panning="true"] { cursor: grabbing; }
 .meow-explorer-graph text {
   fill: var(--dsw-alias-label-primary, rgba(235,235,235,.9));
-  font-size: 10.5px;
+  font-size: 10px;
   pointer-events: none;
   /* 文字描边光晕：压在连线上也可读（描边色=面板底色） */
   paint-order: stroke;
@@ -319,24 +314,6 @@ const EXPLORER_CSS = `
 .meow-explorer-graphbar .meow-explorer-spacer { flex: 1; }
 .meow-explorer-graphbar-label { font-size: 11px; opacity: .55; margin-right: 2px; }
 .meow-explorer-graphbar .meow-explorer-chip { padding: 2px 10px; font-size: 11px; }
-.meow-explorer-crumbs { display: inline-flex; align-items: center; gap: 4px; }
-.meow-explorer-crumbsep { opacity: .35; }
-.meow-explorer-crumbcurrent { font-size: 11px; opacity: .8; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* 实体视图：Top N 统计 + 人卡 + 主题 chips（都是下钻入口，不抢图的主视觉） */
-.meow-explorer-entity-stats { font-size: 11px; opacity: .55; }
-.meow-explorer-entity-cards { flex: none; display: flex; flex-wrap: wrap; gap: 8px; padding: 6px 16px 2px; }
-.meow-explorer-entity-card {
-  display: flex; flex-direction: column; gap: 2px; text-align: left;
-  border: 1px solid rgba(127,127,127,.18); border-radius: 8px;
-  background: transparent; color: inherit; font: inherit; cursor: pointer;
-  padding: 6px 10px; min-width: 96px;
-}
-.meow-explorer-entity-card:hover { border-color: rgba(110,168,254,.5); }
-.meow-explorer-entity-card[data-active="true"] { border-color: rgba(110,168,254,.65); background: rgba(110,168,254,.12); }
-.meow-explorer-entity-cardname { font-size: 12px; font-weight: 600; }
-.meow-explorer-entity-carditems { font-size: 10.5px; opacity: .55; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.meow-explorer-entity-lead { align-self: center; flex: none; font-size: 11px; opacity: .55; white-space: nowrap; margin-right: 2px; }
-.meow-explorer-legend .meow-explorer-spacer { flex: 1; }
 /* 状态降噪：陈旧/归档卡片降透明度（管理标签页） */
 .meow-explorer-card[data-status="stale"] { opacity: .72; }
 .meow-explorer-card[data-status="archived"] { opacity: .55; }
@@ -368,8 +345,6 @@ const EXPLORER_CSS = `
 .meow-explorer-legend {
   flex: none;
   display: flex;
-  flex-wrap: wrap;
-  row-gap: 4px;
   gap: 14px;
   align-items: center;
   padding: 6px 16px;
@@ -719,8 +694,8 @@ const INITIAL_VIEW: GraphViewTransform = { k: 1, x: 0, y: 0 }
 
 function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNodeClick, onNodeDoubleClick, onEdgeClick, onBackgroundDoubleClick }: GraphProps) {
   const width = 760
-  const height = 560
-  const layout = useMemo(() => computeGraphLayout(graph, width, height, 260, rootId), [graph, rootId])
+  const height = 500
+  const layout = useMemo(() => computeGraphLayout(graph, width, height, 240, rootId), [graph, rootId])
   const [hoverId, setHoverId] = useState<string | null>(null)
   const [view, setView] = useState<GraphViewTransform>(INITIAL_VIEW)
   /** 手拖过的节点位置覆盖（优先于力导布局结果；子图变化即作废）。 */
@@ -822,18 +797,7 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
   const isDim = (id: string): boolean => focusId !== null && !neighbors.has(id)
   const edgeWidth = (weight: number): number => 1 + Math.min(3, (weight - 1) * 0.5)
   const labelsById = new Map(graph.nodes.map((n) => [n.id, n.label]))
-  const zoomBy = (factor: number): void => {
-    setView((v) => {
-      const k = Math.min(3, Math.max(0.3, v.k * factor))
-      const ratio = k / v.k
-      const ax = width / 2
-      const ay = height / 2
-      return { k, x: ax - (ax - v.x) * ratio, y: ay - (ay - v.y) * ratio }
-    })
-  }
-
-  return createElement('div', { className: 'meow-explorer-graphhost' },
-    createElement('svg', {
+  return createElement('svg', {
     ref: svgRef,
     className: 'meow-explorer-graph',
     'data-panning': panning ? 'true' : 'false',
@@ -914,8 +878,6 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
         const radius = 6 + Math.min(11, Math.log2(node.count + 1) * 2.4)
         const color = CATEGORY_COLORS[cat]
         const labelOffset = node.kind === 'project' ? radius + 10 : radius + 6
-        // 图上标签截断（完整名字在 tooltip/抽屉里）；实体名比关键词长，截到 9 字
-        const shownLabel = node.label.length > 9 ? `${node.label.slice(0, 9)}…` : node.label
         // 标签降噪：低频关键词默认藏标签，悬停/选中及其邻居时浮现
         const showLabel = node.kind !== 'keyword' || node.count >= 2 || (focusId !== null && neighbors.has(node.id))
         return createElement('g', { key: node.id, ...shared },
@@ -935,15 +897,9 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
               cx: p.x, cy: p.y, r: radius, fill: color, fillOpacity: .85,
               stroke: isSelected ? '#fff' : color, strokeWidth: isSelected ? 2.5 : 1,
             }),
-          showLabel && createElement('text', { x: p.x + labelOffset, y: p.y + 3.5 }, shownLabel),
+          showLabel && createElement('text', { x: p.x + labelOffset, y: p.y + 3.5 }, node.label),
         )
       }),
-    ),
-    ),
-    createElement('div', { className: 'meow-explorer-zoombar' },
-      createElement('button', { type: 'button', title: t('explorer.graph.zoomIn'), onClick: () => zoomBy(1.25) }, '+'),
-      createElement('button', { type: 'button', title: t('explorer.graph.zoomOut'), onClick: () => zoomBy(0.8) }, '\u2212'),
-      createElement('button', { type: 'button', title: t('explorer.graph.resetView'), onClick: () => setView(INITIAL_VIEW) }, '\u2922'),
     ),
   )
 }
@@ -1306,11 +1262,8 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
   const [focusRoot, setFocusRoot] = useState<string | null>(null)
   const [hiddenCats, setHiddenCats] = useState<ReadonlySet<GraphCategory>>(() => new Set())
   const [viewResetSeq, setViewResetSeq] = useState(0)
-  // 关系网范围：个人（生活/全局）/ 项目（带项目名的记忆）。实体层在客户端派生。
-  const [graphScope, setGraphScope] = useState<'personal' | 'project'>('personal')
-  const [entityExpanded, setEntityExpanded] = useState(false)
   // 语言切换时强制重渲染（onUiLocaleChange 注册即回调一次，卸载即退订）
-  const [localeTick, setLocaleTick] = useState(0)
+  const [, setLocaleTick] = useState(0)
   const seqRef = useRef(0)
   const allSeqRef = useRef(0)
   const feedbackSeqRef = useRef(0)
@@ -1395,28 +1348,7 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
 
   // 关系网：全量缓存 → 全图（用户自报姓名/别名折叠进「我」，v0.4.0）→ 按跳数/
   // 重聚焦根过滤 → 按图例关掉的分类过滤（布局只跑在最终子图上，根节点钉中心）
-  const meAliases = useMemo(() => collectMeAliases(allRows), [allRows])
-  const entityOverview = useMemo(
-    () => buildEntityOverview(allRows, {
-      scope: graphScope,
-      limit: entityExpanded ? Infinity : 40,
-      meLabel: t('explorer.graph.me'),
-    }),
-    // localeTick：切语言时重算「我」的显示名（其它标签在渲染层由 t() 取）
-    [allRows, graphScope, entityExpanded, localeTick],
-  )
-  const fullGraph = useMemo(
-    () => foldGraphAliases(entityOverview.graph, meAliases),
-    [entityOverview, meAliases],
-  )
-  /** 库里有没有项目锚定的记忆：没有就不显示「项目」范围，避免一个永远空的 tab。 */
-  const hasProjectRows = useMemo(
-    () => allRows.some((row) => {
-      const p = (row.project ?? '').trim()
-      return p !== '' && p !== '全局' && p.toLowerCase() !== 'global'
-    }),
-    [allRows],
-  )
+  const fullGraph = useMemo(() => foldGraphAliases(buildPersonalGraph(allRows), collectMeAliases(allRows)), [allRows])
   const graphRootId = focusRoot ?? ME_NODE_ID
   const graph = useMemo(() => {
     let g = fullGraph
@@ -1441,28 +1373,6 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
     }
     return CATEGORY_ORDER.filter((cat) => present.has(cat))
   }, [graph, fullGraph, hiddenCats])
-  /** 图下方「我的人」：只要有关联的具体人物（泛称已不在人物词典里）。 */
-  const graphPersonCards = entityOverview.persons.filter(
-    (p) => fullGraph.nodes.some((n) => n.id === p.id),
-  )
-  /** 重聚焦节点（面包屑展示用；用全图取，避免被跳数过滤后名字丢失）。 */
-  const focusNode = focusRoot !== null ? fullGraph.nodes.find((n) => n.id === focusRoot) ?? null : null
-  /** 当前子图里实际可见的实体数（已扣掉「我」、跳数与图例过滤）。 */
-  const visibleEntityCount = graph.nodes.reduce((n, node) => n + (node.kind === 'me' ? 0 : 1), 0)
-  /** 图例计数：按当前全图的分类直方图（关掉的分类也要能点回来，所以用 fullGraph）。 */
-  const categoryCounts = useMemo(() => {
-    const counts = new Map<GraphCategory, number>()
-    for (const n of fullGraph.nodes) {
-      const cat = nodeCategory(n)
-      counts.set(cat, (counts.get(cat) ?? 0) + 1)
-    }
-    return counts
-  }, [fullGraph])
-
-  useEffect(() => {
-    if (!hasProjectRows && graphScope === 'project') setGraphScope('personal')
-  }, [hasProjectRows, graphScope])
-
   // 跳数收窄后抽屉里的节点可能已不在子图里：自动收起抽屉
   useEffect(() => {
     if (drawerNode !== null && !graph.nodes.some((n) => n.id === drawerNode.id)) setDrawerNode(null)
@@ -1477,27 +1387,6 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
     const node = fullGraph.nodes.find((n) => n.id === focusRoot)
     if (node === undefined || hiddenCats.has(nodeCategory(node))) setFocusRoot(null)
   }, [fullGraph, focusRoot, hiddenCats])
-
-  /** 保证某分类可见（点人卡时，人物分类可能正好被图例关掉）。 */
-  const ensureCatVisible = (cat: GraphCategory): void => {
-    setHiddenCats((prev) => {
-      if (!prev.has(cat)) return prev
-      const next = new Set(prev)
-      next.delete(cat)
-      return next
-    })
-  }
-
-  /** 切换范围：清掉聚焦根与抽屉（分类显隐保留，用户可能正在筛选）。 */
-  const switchGraphScope = (scope: 'personal' | 'project'): void => {
-    if (scope === graphScope) return
-    setGraphScope(scope)
-    setEntityExpanded(false)
-    setFocusRoot(null)
-    setDrawerNode(null)
-    setDrawerEdge(null)
-    setViewResetSeq((v) => v + 1)
-  }
 
   /** 图例点击开关分类（「我」恒显，不给关）。 */
   const toggleCat = (cat: GraphCategory): void => {
@@ -1744,31 +1633,17 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
       // ── 关系网标签页：以人为中心的多跳图谱（跳数可控/重聚焦/分类开关/缩放平移）+ 节点抽屉 ──
       error === '' && tab === 'graph' && createElement('div', { className: 'meow-explorer-body', 'data-view': 'graph' },
         createElement('div', { className: 'meow-explorer-graphbar', role: 'group', 'aria-label': t('explorer.graph.hops.label') },
-          // 范围（个人 / 项目）：只有库里真的有项目记忆时才显示
-          ...(hasProjectRows
-            ? ([['personal', 'explorer.graph.scope.personal'], ['project', 'explorer.graph.scope.project']] as const).map(([scope, key]) =>
-                createElement('button', {
-                  key: scope,
-                  className: 'meow-explorer-chip',
-                  'data-active': graphScope === scope ? 'true' : 'false',
-                  onClick: () => switchGraphScope(scope),
-                }, t(key)))
-            : []),
+          // 重聚焦中：提供回到「我」的出口（双击空白处同效）
+          focusRoot !== null && createElement('button', {
+            className: 'meow-explorer-chip',
+            'data-active': 'true',
+            onClick: () => setFocusRoot(null),
+          }, t('explorer.graph.backToMe')),
           createElement('span', { className: 'meow-explorer-spacer' }),
-          // 导航面包屑：我 › 当前聚焦节点（点「← 我」回到默认）
-          focusRoot !== null && createElement('span', { className: 'meow-explorer-crumbs' },
-            createElement('button', {
-              className: 'meow-explorer-chip',
-              title: t('explorer.graph.backToMe'),
-              onClick: () => setFocusRoot(null),
-            }, `\u2190 ${t('explorer.graph.me')}`),
-            focusNode !== null && createElement('span', { className: 'meow-explorer-crumbsep' }, '\u203a'),
-            focusNode !== null && createElement('span', { className: 'meow-explorer-crumbcurrent', title: focusNode.label }, focusNode.label),
-          ),
+          createElement('span', { className: 'meow-explorer-graphbar-label' }, t('explorer.graph.hops.label')),
           ...([1, 2, 0] as const).map((h) => createElement('button', {
             key: h,
             className: 'meow-explorer-chip',
-            title: t('explorer.graph.hops.label'),
             'data-active': hops === h ? 'true' : 'false',
             onClick: () => setHops(h),
           }, t(h === 1 ? 'explorer.graph.hops.one' : h === 2 ? 'explorer.graph.hops.two' : 'explorer.graph.hops.all'))),
@@ -1776,12 +1651,10 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
             className: 'meow-explorer-chip',
             title: t('explorer.graph.resetView'),
             onClick: () => setViewResetSeq((v) => v + 1),
-          }, '\u21ba'),
+          }, t('explorer.graph.resetView')),
         ),
-        createElement('div', { className: 'meow-explorer-graphwrap', title: t('explorer.graph.clickHint') },
-          entityOverview.stats.total === 0
-            ? createElement('div', { className: 'meow-explorer-status' }, t('explorer.graph.empty'))
-            : createElement(GraphView, {
+        createElement('div', { className: 'meow-explorer-graphwrap' },
+          createElement(GraphView, {
             graph,
             rootId: graphRootId,
             selectedId: drawerNode?.id ?? null,
@@ -1804,23 +1677,8 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
             onBackgroundDoubleClick: () => setFocusRoot(null),
           }),
         ),
-        // 图下方「身边人」：所有具体的人都列出来（没有关联的显示占位，不隐藏）
-        graphPersonCards.length > 0 && createElement('div', { className: 'meow-explorer-entity-cards' },
-          createElement('span', { className: 'meow-explorer-entity-lead' }, t('explorer.graph.people')),
-          graphPersonCards.map((p) => createElement('button', {
-            key: p.id,
-            className: 'meow-explorer-entity-card',
-            'data-active': focusRoot === p.id ? 'true' : 'false',
-            title: p.items.join(' · '),
-            onClick: () => { ensureCatVisible('person'); setFocusRoot(p.id); setDrawerNode(null); setDrawerEdge(null) },
-          },
-            createElement('span', { className: 'meow-explorer-entity-cardname' }, p.label),
-            createElement('span', { className: 'meow-explorer-entity-carditems' },
-              p.items.length > 0 ? p.items.slice(0, 3).join(' · ') : t('explorer.graph.noLinks')),
-          )),
-        ),
         createElement('div', { className: 'meow-explorer-legend' },
-          // 图例 = 类型筛选 + 真实计数（「我」恒显，不给关）
+          // 图例可点 = 分类显隐开关（「我」恒显）；点掉的分类划线变淡，可再点回来
           ...legendCats.map((cat) => cat === 'me'
             ? createElement('span', { key: cat, className: 'meow-explorer-legend-item' },
               createElement('span', { className: 'meow-explorer-chip-dot', style: { background: CATEGORY_COLORS[cat] } }),
@@ -1833,26 +1691,8 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
               onClick: () => toggleCat(cat),
             },
               createElement('span', { className: 'meow-explorer-chip-dot', style: { background: CATEGORY_COLORS[cat] } }),
-              createElement('span', { className: 'meow-explorer-legend-text' },
-                `${categoryLabel(cat)} ${categoryCounts.get(cat) ?? 0}`))),
-          createElement('span', { className: 'meow-explorer-spacer' }),
-          createElement('span', { className: 'meow-explorer-entity-stats', title: t('explorer.graph.clickHint') },
-            visibleEntityCount === entityOverview.stats.total
-              ? t('explorer.graph.statsAll', {
-                  total: String(entityOverview.stats.total),
-                  edges: String(graph.edges.length),
-                })
-              : t('explorer.graph.stats', {
-                  shown: String(visibleEntityCount),
-                  total: String(entityOverview.stats.total),
-                  edges: String(graph.edges.length),
-                })),
-          !entityExpanded && entityOverview.stats.total > entityOverview.stats.entities && createElement('button', {
-            className: 'meow-explorer-chip',
-            title: t('explorer.graph.expand'),
-            // 展开 = 去掉 Top N **同时**放开跳数，否则点了 +N 仍会被 2 跳过滤掉
-            onClick: () => { setEntityExpanded(true); setHops(0) },
-          }, `+${entityOverview.stats.total - entityOverview.stats.entities}`),
+              createElement('span', { className: 'meow-explorer-legend-text' }, categoryLabel(cat)))),
+          createElement('span', { style: { opacity: .55 } }, t('explorer.graph.clickHint')),
         ),
       ),
 
