@@ -194,6 +194,108 @@ export async function extractMemoryEntities(
   return parsed.entities.length
 }
 
+const REPAIR_ZH_PROMPT = `你是个人记忆的关系补全器。给你一个实体 X、它出现的记忆，以及「已有实体列表」，请只根据这些记忆判断 X 与列表中的哪些实体存在关系。
+
+只输出严格 JSON，不要解释、不要 markdown：
+{"relations":[{"to":"已有实体名","type":"has_allergy|lives_in|works_at|plans|prefers|avoids|owns|treats|related_to"}]}
+
+规则：
+- to 只能从「已有实体列表」里选，不能是 X 自己。
+- 只连记忆里明确支持的关系；不确定、太弱或没有就返回 {"relations":[]}。
+- 不要为了连线而编造关系。
+- 中文名称原样输出，不翻译、不罗马化。`
+
+const REPAIR_EN_PROMPT = `You complete relations for a personal knowledge graph. Given entity X, the memories it appears in, and a list of existing entities, decide which existing entities X relates to, based ONLY on those memories.
+
+Output strict JSON, no prose, no markdown:
+{"relations":[{"to":"existing entity name","type":"has_allergy|lives_in|works_at|plans|prefers|avoids|owns|treats|related_to"}]}
+
+Rules:
+- "to" MUST be one of the existing entity names, never X itself.
+- Only relations explicitly supported by the memories; if unsure or none, return {"relations":[]}.
+- Never invent a relation just to connect a node.`
+
+export function parseRelationRepair(text: string): Array<{ to: string; type: RelationType }> {
+  const json = extractJson(text)
+  if (json === null) return []
+  const rows = Array.isArray((json as { relations?: unknown }).relations)
+    ? (json as { relations: unknown[] }).relations
+    : []
+  const out: Array<{ to: string; type: RelationType }> = []
+  for (const row of rows) {
+    if (row === null || typeof row !== 'object') continue
+    const r = row as Record<string, unknown>
+    const to = typeof r.to === 'string' ? r.to.trim() : ''
+    const type = typeof r.type === 'string' && (RELATION_TYPES as readonly string[]).includes(r.type)
+      ? (r.type as RelationType)
+      : 'related_to'
+    if (to === '') continue
+    out.push({ to, type })
+  }
+  return out.slice(0, 20)
+}
+
+/**
+ * 对「最终图上没有任何边」的实体，用它出现的记忆再问一次模型，补语义关系。
+ * 只在批量抽取刚跑完时触发（手动重建 / dream 收尾），不在写入路径调用。
+ */
+export async function repairIsolatedEntities(
+  db: MemoryDb,
+  callLLM: CallLLM,
+  opts: { limit?: number; logger?: { warn?: (m: string) => void } } = {},
+): Promise<{ checked: number; relations: number; failed: number }> {
+  const isolated = db.isolatedEntities(opts.limit ?? 8)
+  if (isolated.length === 0) return { checked: 0, relations: 0, failed: 0 }
+
+  const all = db.entityGraph(500).nodes
+  const byName = new Map(all.map((n) => [n.name, n]))
+  let relations = 0
+  let failed = 0
+
+  for (const ent of isolated) {
+    const memories = ent.rowIds
+      .map((id) => db.findById(id))
+      .filter((r): r is NonNullable<typeof r> => r !== undefined)
+    const content = memories
+      .map((m) => (m.row.title ? `${m.row.title}\n${m.row.content}` : m.row.content))
+      .filter((c) => c.trim() !== '')
+      .join('\n---\n')
+      .slice(0, 4000)
+    if (content.trim() === '') continue
+
+    const names = all.filter((n) => n.id !== ent.id).map((n) => n.name).slice(0, 80)
+    if (names.length === 0) continue
+
+    let text = ''
+    try {
+      text = await callLLM([
+        { role: 'system', content: getPromptLang().toLowerCase().startsWith('zh') ? REPAIR_ZH_PROMPT : REPAIR_EN_PROMPT },
+        {
+          role: 'user',
+          content: [{
+            type: 'text',
+            text: `实体 X：${ent.name}（${ent.type}）\n\n它出现的记忆：\n${content}\n\n已有实体列表：\n${names.join('\n')}`,
+          }],
+        },
+      ])
+    } catch (e) {
+      failed++
+      logger?.warn?.(`[jt-pa] 孤立实体补关系调用失败（${ent.name}）：${e instanceof Error ? e.message : String(e)}`)
+      continue
+    }
+    if (text.trim() === '') { failed++; continue }
+
+    for (const r of parseRelationRepair(text)) {
+      const to = byName.get(r.to)
+      if (to === undefined || to.id === ent.id) continue
+      db.upsertRelation(ent.id, to.id, r.type, ent.rowIds[0] ?? null)
+      relations++
+    }
+  }
+
+  return { checked: isolated.length, relations, failed }
+}
+
 /** 批量抽「还没抽过」的记忆（dream 收尾 / 手动重建）。 */
 let extracting = false
 
@@ -203,7 +305,7 @@ export async function extractPendingEntities(
   opts: { limit?: number; logger?: { warn?: (m: string) => void } } = {},
 ): Promise<{ processed: number; entities: number; failed: number }> {
   // dream 收尾与手动重建可能同时触发：同一时刻只允许一批，避免重复调用/互相清写。
-  if (extracting) return { processed: 0, entities: 0, failed: 0 }
+  if (extracting) return { processed: 0, entities: 0, failed: 0, repaired: 0 }
   extracting = true
   try {
     return await extractPendingEntitiesInner(db, callLLM, opts)
@@ -216,7 +318,7 @@ async function extractPendingEntitiesInner(
   db: MemoryDb,
   callLLM: CallLLM,
   opts: { limit?: number; logger?: { warn?: (m: string) => void } } = {},
-): Promise<{ processed: number; entities: number; failed: number }> {
+): Promise<{ processed: number; entities: number; failed: number; repaired: number }> {
   const ids = db.rowsNeedingEntityExtraction(opts.limit ?? 6)
   let processed = 0
   let entities = 0
@@ -230,5 +332,14 @@ async function extractPendingEntitiesInner(
     processed++
     entities += n
   }
-  return { processed, entities, failed }
+  // 批量抽完再补一次孤立实体：只补「最终图上完全没有任何边」的，模型决定连不连。
+  let repaired = 0
+  if (processed > 0) {
+    const r = await repairIsolatedEntities(db, callLLM, { limit: 8, logger: opts.logger })
+    repaired = r.relations
+    if (r.checked > 0) {
+      opts.logger?.warn?.(`[jt-pa] 孤立实体补关系：检查 ${r.checked} 个，补了 ${r.relations} 条，失败 ${r.failed}`)
+    }
+  }
+  return { processed, entities, failed, repaired }
 }

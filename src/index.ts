@@ -1288,7 +1288,7 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
         const llm = dreamLlm
         void extractPendingEntities(getDb(wsE, resolved.projectDir), llm, { limit: 6, logger: ctx.logger })
           .then((r) => {
-            if (r.processed > 0) ctx.logger.info(`dsh-personal-memory: dream 收尾抽取实体 ${r.processed} 条记忆 / ${r.entities} 个实体`)
+            if (r.processed > 0) ctx.logger.info(`dsh-personal-memory: dream 收尾抽取实体 ${r.processed} 条记忆 / ${r.entities} 个实体 / 补关系 ${r.repaired} 条`)
           })
           .catch(() => {})
       }
@@ -2056,7 +2056,7 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
             if (purge) db.clearEntities()
             // 后台跑：28 条 ≈ 28 次调用，不能让 HTTP 干等；前端轮询 /api/entities。
             void extractPendingEntities(db, llm, { limit, logger: ctx.logger })
-              .then((r) => ctx.logger.info(`dsh-personal-memory: 手动重建实体完成（${r.processed} 条记忆 / ${r.entities} 个实体 / 失败 ${r.failed}）`))
+              .then((r) => ctx.logger.info(`dsh-personal-memory: 手动重建实体完成（${r.processed} 条记忆 / ${r.entities} 个实体 / 失败 ${r.failed} / 补关系 ${r.repaired} 条）`))
               .catch((e) => ctx.logger.warn(`dsh-personal-memory: 手动重建实体失败：${e instanceof Error ? e.message : String(e)}`))
             writeJson(res, 200, { ok: true, started: true, pending: db.entityStats().pending })
           } catch (e) {

@@ -118,6 +118,68 @@ section('3. LLM 失败不标记 done')
   db.close()
 }
 
+
+section('4. 孤立实体补关系（模型补，非法目标跳过）')
+{
+  const db = new D.MemoryDb(join(dir, 'repair.db'))
+  const r1 = db.insert({ level: 'fact', content: '只有实体甲' })
+  const r2 = db.insert({ level: 'fact', content: '只有实体乙' })
+  await E.extractMemoryEntities(db, r1.id, async () => JSON.stringify({ entities: [{ name: '甲', type: 'person' }], relations: [] }))
+  await E.extractMemoryEntities(db, r2.id, async () => JSON.stringify({ entities: [{ name: '乙', type: 'person' }], relations: [] }))
+  const iso = db.isolatedEntities()
+  ok('两个实体都孤立', iso.length === 2, JSON.stringify(iso.map((e) => e.name)))
+
+  // 同条记忆里的实体有 cooc 边，不算孤立
+  const r3 = db.insert({ level: 'fact', content: '丙 丁' })
+  await E.extractMemoryEntities(db, r3.id, async () => JSON.stringify({
+    entities: [{ name: '丙', type: 'person' }, { name: '丁', type: 'person' }],
+    relations: [],
+  }))
+  ok('同条记忆的实体不算孤立', db.isolatedEntities().every((e) => e.name !== '丙' && e.name !== '丁'))
+
+  const res = await E.repairIsolatedEntities(db, async (messages) => {
+    const userText = messages[1].content[0].text
+    if (userText.includes('实体 X：甲')) {
+      return JSON.stringify({ relations: [
+        { to: '乙', type: 'related_to' },
+        { to: '不存在的实体', type: 'related_to' },
+      ] })
+    }
+    return JSON.stringify({ relations: [] })
+  })
+  ok('检查 2 个孤立实体', res.checked === 2, JSON.stringify(res))
+  ok('只补 1 条（非法目标被跳过）', res.relations === 1, JSON.stringify(res))
+  const g = db.entityGraph()
+  ok('甲→乙 的边已落库', g.edges.some((e) => e.origin === 'llm' && e.relation_type === 'related_to'), JSON.stringify(g.edges))
+  ok('补完后没有孤立实体', db.isolatedEntities().length === 0, JSON.stringify(db.isolatedEntities()))
+  db.close()
+}
+
+section('5. 批量抽取结束后自动补孤立实体')
+{
+  const db = new D.MemoryDb(join(dir, 'auto-repair.db'))
+  db.insert({ level: 'fact', content: '只有实体甲' })
+  db.insert({ level: 'fact', content: '只有实体乙' })
+  const call = async (messages) => {
+    const system = String(messages[0].content)
+    if (system.includes('关系补全器')) {
+      const userText = messages[1].content[0].text
+      return userText.includes('实体 X：甲')
+        ? JSON.stringify({ relations: [{ to: '乙', type: 'related_to' }] })
+        : JSON.stringify({ relations: [] })
+    }
+    const userText = messages[1].content[0].text
+    const name = userText.includes('甲') ? '甲' : '乙'
+    return JSON.stringify({ entities: [{ name, type: 'person' }], relations: [] })
+  }
+  const r = await E.extractPendingEntities(db, call, { limit: 10 })
+  ok('批量抽了 2 条', r.processed === 2, JSON.stringify(r))
+  ok('自动补出 1 条关系', r.repaired === 1, JSON.stringify(r))
+  const g = db.entityGraph()
+  ok('自动补完没有孤立实体', db.isolatedEntities().length === 0, JSON.stringify(g.edges))
+  db.close()
+}
+
 rmSync(dir, { recursive: true, force: true })
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

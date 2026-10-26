@@ -813,6 +813,27 @@ export class MemoryDb {
     }
   }
 
+  /**
+   * 最终图上真正孤立的实体：没有任何语义关系，也没有「同条记忆」边。
+   * 直接复用 entityGraph（含两类边），避免这里再重复一遍图构建逻辑。
+   */
+  isolatedEntities(limit = 20): Array<{ id: string; name: string; type: string; rowIds: string[] }> {
+    try {
+      const graph = this.entityGraph(500)
+      const degree = new Set<string>()
+      for (const e of graph.edges) {
+        degree.add(e.source)
+        degree.add(e.target)
+      }
+      return graph.nodes
+        .filter((n) => !degree.has(n.id))
+        .slice(0, limit)
+        .map((n) => ({ id: n.id, name: n.name, type: n.type, rowIds: n.rowIds }))
+    } catch {
+      return []
+    }
+  }
+
   entityStats(): { entities: number; relations: number; pending: number } {
     try {
       const entities = (this.db.prepare('SELECT COUNT(*) AS c FROM entities e WHERE EXISTS (SELECT 1 FROM memory_entities me WHERE me.entity_id = e.id)').get() as { c: number }).c
