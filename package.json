@@ -51,7 +51,8 @@
     "check-lang": "node scripts/check-lang.mjs",
     "link-workspace": "powershell -ExecutionPolicy Bypass -File scripts/link-workspace.ps1",
     "test:retrieval": "node tests/retrieval.mjs",
-    "test:core": "node tests/retrieval.mjs"
+    "test:core": "node tests/retrieval.mjs && node tests/entities-llm.mjs",
+    "test:entities": "node tests/entities-llm.mjs"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-llm": "^0.1.1-rc.2",

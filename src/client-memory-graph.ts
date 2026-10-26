@@ -102,7 +102,7 @@ export interface GraphNode {
   /** 'kw:<label>' 或 'prj:<label>' 或中心 ME_NODE_ID（前缀区分同名关键词/项目）。 */
   id: string
   label: string
-  kind: 'keyword' | 'project' | 'me'
+  kind: 'keyword' | 'project' | 'me' | 'entity'
   /** 出现次数（关键词=含它的记忆数；项目=归属它的记忆数；中心=记忆总数）。 */
   count: number
   /** 该节点记忆的层级分布（着色用主导层）。 */
@@ -111,6 +111,10 @@ export interface GraphNode {
   lastUpdated?: number
   /** 关联记忆的 hit_count 总和（tooltip「累计命中」；同一条记忆按关键词/项目数重复计）。 */
   hits?: number
+  /** 实体节点：类型（person/location/...；决定分类配色）。 */
+  entityType?: string
+  /** 实体节点：来源记忆 id（点节点直接取来源记忆，不靠关键词反查）。 */
+  rowIds?: readonly string[]
 }
 
 export interface GraphEdge {
@@ -118,8 +122,10 @@ export interface GraphEdge {
   target: string
   /** 共现/归属次数（边粗细）。 */
   weight: number
-  /** 边的语义：mine=我→直连锚点；project=项目归属；cooc=关键词共现。 */
-  kind: 'mine' | 'project' | 'cooc'
+  /** 边的语义：mine=我→直连锚点；project=项目归属；cooc=关键词共现；relation=LLM 关系。 */
+  kind: 'mine' | 'project' | 'cooc' | 'relation'
+  /** LLM 关系类型（has_allergy / lives_in / ...），仅 relation 边有。 */
+  relation_type?: string
 }
 
 export interface MemoryGraph {
@@ -185,8 +191,9 @@ export function buildGraph(rows: readonly ExplorerRow[], options: BuildGraphOpti
     // 关键词去重（同一条记忆里重复关键词只算一次）
     const seen = new Set<string>()
     for (const kw of row.keywords) {
-      const label = kw.trim()
+      const label = canonicalKeyword(kw.trim())
       if (label.length === 0 || seen.has(label)) continue
+      if (isGraphNoise(label)) continue
       seen.add(label)
       bumpNode(kwCount, label, row.level, row.updated_at, row.hit_count)
     }
@@ -266,20 +273,38 @@ export const ME_NODE_ID = 'me'
  * experience=经验·原则（主导 lesson/rules）；thing=事物（主导 fact/topic/project）。
  * 分类是从既有数据（层级直方图）推导的诚实近似：不做实体抽取，宁缺毋滥。
  */
-export type GraphCategory = 'me' | 'project' | 'person' | 'thing' | 'experience' | 'self'
+export type GraphCategory =
+  | 'me'
+  | 'person'
+  | 'health'
+  | 'event'
+  | 'location'
+  | 'organization'
+  | 'item'
+  | 'project'
+  | 'thing'
+  | 'experience'
+  | 'self'
 
 /** 分类配色（主题无关的柔和固定色板；深浅主题下都可读）。 */
 export const CATEGORY_COLORS: Record<GraphCategory, string> = {
-  me: '#6ea8fe', // 柔蓝：我（视觉锚点）
-  person: '#f5b15c', // 琥珀：人物·画像
-  project: '#3ec6a0', // 青绿：项目
-  thing: '#a78bfa', // 紫：事物
-  experience: '#f0789a', // 玫红：经验·原则
-  self: '#9fb3d1', // 灰蓝：AI 自身
+  me: '#3b82f6', // 蓝：我
+  person: '#f59e0b', // 琥珀：人物
+  health: '#ef4444', // 红：健康
+  event: '#ec4899', // 玫红：事件
+  location: '#22c55e', // 绿：地点
+  organization: '#0ea5e9', // 天蓝：机构
+  item: '#a855f7', // 紫：物品
+  project: '#14b8a6', // 青绿：项目
+  thing: '#94a3b8', // 灰：概念/其他
+  experience: '#f472b6', // 粉：经验·原则
+  self: '#64748b', // 深灰蓝：AI 自身
 }
 
-/** 图例展示顺序（我 → 人物 → 项目 → 事物 → 经验 → 自身）。 */
-export const CATEGORY_ORDER: readonly GraphCategory[] = ['me', 'person', 'project', 'thing', 'experience', 'self']
+/** 图例展示顺序。 */
+export const CATEGORY_ORDER: readonly GraphCategory[] = [
+  'me', 'person', 'health', 'event', 'location', 'organization', 'item', 'project', 'thing', 'experience', 'self',
+]
 
 // ── 人名形状识别（v0.4.1）────────────────────────────────────────────────────
 // 只认明显形态，不是 NER：① 2–4 个汉字且首字是「安全姓氏」（剔除了与高频词碰撞的
@@ -295,6 +320,61 @@ const ZH_COMPOUND_SURNAMES: readonly string[] = [
 ]
 const ZH_NAME_SUFFIXES: readonly string[] = ['总', '老师', '经理', '博士', '哥', '姐', '同学', '同事', '工']
 
+/** 同义/缩写归一：同一个东西的多种写法收敛成一个节点。 */
+const GRAPH_ALIASES: Readonly<Record<string, string>> = {
+  协和: '协和医院',
+  会展: '会展中心',
+  个人所得税: '个税',
+  健康检查: '体检',
+}
+function canonicalKeyword(label: string): string {
+  // 称谓同义：妻子生日 / 太太生日 → 老婆生日（不只是全等匹配）
+  let s = label.replace(/妻子|太太/g, '老婆').replace(/丈夫/g, '老公')
+  return GRAPH_ALIASES[s] ?? s
+}
+
+/**
+ * 关键词准入：LLM 抽的 keywords 不全是实体。实测真实库里的噪声：
+ *   代码/技术：scanZstdFrames、session.v4.jsonl.zstd、lark-cli、token_missing、stale
+ *   日期/编号：11月、12月5日、10月底、502、661234、四年级、C座
+ *   动作/口语：下单、庆生、不能久坐、不喝咖啡、待办
+ *   泛称：孩子、家人、公司、职业、礼物、医嘱
+ * 这些进图只会让「分类很奇怪」，在 buildGraph 入口直接丢掉（记忆本体不受影响）。
+ */
+const GRAPH_NOISE_TERMS = new Set([
+  '孩子', '家人', '家庭', '儿子', '女儿', '亲属', '公司', 'AI公司', '互联网', '职业', '产品经理',
+  '礼物', '专属礼物', '兴趣', '待办', '医嘱', '行程', '不能久坐', '买衣服', '买书', '养猫',
+  '办住院', '值机', '作废', '到货', '医生', '医疗', '医疗资源', '姓名', '学龄期', '家属', '审批待办',
+])
+export function isGraphNoise(label: string): boolean {
+  const s = label.trim()
+  if (s.length === 0) return true
+  if (GRAPH_NOISE_TERMS.has(s)) return true
+  // 代码形态：路径/扩展名/占位符/snake_case/全大写常量/长驼峰/技术词
+  if (/[\\/]/.test(s)) return true
+  if (/\.[a-z0-9]{1,5}$/i.test(s)) return true
+  if (/[{}<>$]/.test(s)) return true
+  if (/^[a-z][a-z0-9]*(_[a-z0-9]+)+$/i.test(s)) return true
+  if (/^[A-Z][A-Z0-9]*(_[A-Z0-9]+)+$/.test(s)) return true
+  if (s.length >= 8 && /^[A-Za-z][A-Za-z0-9]*$/.test(s) && /[a-z]/.test(s) && /[A-Z]/.test(s)) return true
+  if (/zstd|token|session|auth|jsonl|scanZstd|decompress|DSH|deepseek|lark-cli|agent研发|agent评测|stale/i.test(s)) return true
+  // 日期 / 编号 / 座位
+  if (/^\d+$/.test(s)) return true
+  if (/^\d{1,2}月(\d{1,2}日)?$/.test(s) || /^\d{4}年/.test(s)) return true
+  if (/^\d+月底?$/.test(s) || /^\d+年级$/.test(s) || /^\d+(\.\d+)?岁$/.test(s)) return true
+  if (/^[一二三四五六七八九十]+年级$/.test(s) || /^[一二三四五六七八九十两]+岁半?$/.test(s)) return true
+  if (/bot身份|user身份|会话文件|会话记录|文件格式/.test(s)) return true
+  if (/^[A-Z]\d*座$/.test(s)) return true
+  // 动作 / 口语 / 相对时间
+  if (/^(不能|不要|不喝|不吃|不坐|别|请|先|已|下单|庆生|预约|记得|帮我|买|养|办|订|去|做|看|吃|喝|值机|作废|到货)/.test(s)) return true
+  if (/^(本周|下周|上周|下个月|今天|明天|昨天)/.test(s)) return true
+  if (/^周[一二三四五六日天]$/.test(s)) return true
+  if (/首帧|多帧|解码|解压|会话|记录|文件|历史对话|agent|token|zstd/i.test(s)) return true
+  // 动作/判断类短语（参会/否决/回杭州/坐车/加价绕路…）
+  if (/^(参|否|回|坐|加价|只|解|前往|返回|决定|选择)/.test(s)) return true
+  return false
+}
+
 /** 关键词标签是否「长得像人名」（见上方姓氏表注释的取舍）。 */
 export function isPersonNameLabel(label: string): boolean {
   const s = label.trim()
@@ -308,16 +388,57 @@ export function isPersonNameLabel(label: string): boolean {
   return s.length >= 2 && s.length <= 4
 }
 
-/** 节点的语义分类：me/project 由 kind 决定；关键词先过人名形状，再按主导层级映射（空直方图兜底 thing）。 */
+// ── 关键词语义分类（替代原来的「按记忆层级」分组）──────────────────────────
+// 旧实现把 user 层所有词都叫「人物·画像」、lesson/rules 全叫「经验·原则」，
+// 于是地点/健康/事件全混进人物和道理里。这里先按**词形**判语义，判不出来才回退层级。
+const RELATION_TERMS = new Set([
+  '老婆', '妻子', '太太', '老公', '丈夫', '弟弟', '妹妹', '哥哥', '姐姐', '爸爸', '妈妈',
+  '爷爷', '奶奶', '外公', '外婆', '岳父', '岳母', '公公', '婆婆', '老大', '老二', '老三',
+  '家人', '家庭', '孩子', '儿子', '女儿', '父母', '兄弟', '姐妹', '朋友', '同事', '老板', '领导',
+])
+const HEALTH_RE = /过敏|休克|症$|病$|炎$|痛$|损伤|半月板|疗程|反流|骨折|血压|血糖|失眠|抑郁|焦虑|感染|结石|息肉|癌|康复/
+const EVENT_RE = /生日|会议|体检|健康检查|检查|出差|旅行|旅游|聚餐|汇算|面试|婚礼|节日|假期|手术|复查|挂号|入院|住院|出院|搬家|迁居|周年|行程|超时|事件|聚会|约会|出游/
+const ORG_EXACT = new Set(['腾讯', '阿里', '阿里巴巴', '百度', '字节', '美团', '京东', '华为', '小米', '协和', '优衣库', '始祖鸟', '12315'])
+const ORG_SUFFIX = /(公司|集团|银行|医院|大学|学校|平台|客服|协会|政府|局|院|所|店|网|台)$/
+const CITY_PREFIX = [
+  '北京', '上海', '广州', '深圳', '杭州', '成都', '重庆', '天津', '南京', '武汉', '西安', '苏州',
+  '长沙', '郑州', '合肥', '济南', '青岛', '厦门', '福州', '昆明', '大连', '宁波', '无锡', '三亚',
+  '海南', '新疆', '西藏', '云南', '四川', '浙江', '江苏', '广东', '山东', '河南', '河北', '湖南',
+  '湖北', '福建', '安徽', '江西', '山西', '陕西', '辽宁', '吉林', '黑龙江', '广西', '贵州', '甘肃',
+  '南山', '城西', '朝阳', '滨江', '西湖', '海淀', '浦东', '天河', '福田', '余杭', '萧山',
+]
+const LOC_SUFFIX = /(市|区|县|镇|村|街|路|巷|广场|公园|机场|车站|火车站|高铁站|会展中心|会展|中心|酒店|餐厅|咖啡馆|商场|大厦|园区|科技园|门口|附近|室|号楼|馆|咖)$/
+const ITEM_EXACT = new Set(['猫', '狗', '书', '车', '房', '海鲜', '花生', '坚果', '咖啡因', '恐龙'])
+const ITEM_SUFFIX = /(书|码|券|咖啡|奶|茶|菜|肉|果|药|衣|鞋|包|机|猫|狗|花|油|酱|盐|糖|酒|水|饭|面|豆|蛋|虾|蟹|鱼|内脏|零食|水果|坚果|花生|鲜|食品)$/
+
+/** 词形 → 语义分类；判不出来返回 null（交给层级回退）。 */
+function semanticCategory(label: string): GraphCategory | null {
+  const s = label.trim()
+  if (RELATION_TERMS.has(s) || isPersonNameLabel(s)) return 'person'
+  if (HEALTH_RE.test(s)) return 'health'
+  if (EVENT_RE.test(s)) return 'event'
+  if (CITY_PREFIX.some((c) => s.startsWith(c)) || LOC_SUFFIX.test(s)) return 'location'
+  if (ORG_EXACT.has(s) || ORG_SUFFIX.test(s)) return 'organization'
+  if (ITEM_EXACT.has(s) || ITEM_SUFFIX.test(s) || /券|代金券|优惠券/.test(s)) return 'item'
+  return null
+}
+
+/** 节点的语义分类：me/project 由 kind 决定；关键词先按词形判语义，再回退层级。 */
 export function nodeCategory(node: Pick<GraphNode, 'kind' | 'levels'> & { label?: string }): GraphCategory {
   if (node.kind === 'me') return 'me'
   if (node.kind === 'project') return 'project'
-  // 人名形状优先于主导层（v0.4.1 用户实证：人名关键词在 fact/topic 层占多数时被误归
-  // 「事物」）。形状判断是诚实近似——不是 NER，只认明显形态，误伤面=颜色标错，不碰数据。
-  if (typeof node.label === 'string' && isPersonNameLabel(node.label)) return 'person'
+  if (node.kind === 'entity') {
+    const t = (node as { entityType?: string }).entityType
+    if (t === 'person' || t === 'health' || t === 'event' || t === 'location' || t === 'organization' || t === 'item') return t
+    if (t === 'project') return 'project'
+    return 'thing'
+  }
+  if (typeof node.label === 'string') {
+    const semantic = semanticCategory(node.label)
+    if (semantic !== null) return semantic
+  }
   if (!Object.values(node.levels).some((count) => count > 0)) return 'thing'
   const dom = dominantLevel(node.levels)
-  if (dom === 'user') return 'person'
   if (dom === 'soul') return 'self'
   if (dom === 'lesson' || dom === 'rules') return 'experience'
   return 'thing'
@@ -329,6 +450,11 @@ export function categoryLabel(cat: GraphCategory): string {
     case 'me': return t('explorer.graph.me')
     case 'project': return t('explorer.graph.legend.project')
     case 'person': return t('explorer.graph.cat.person')
+    case 'health': return t('explorer.graph.cat.health')
+    case 'event': return t('explorer.graph.cat.event')
+    case 'location': return t('explorer.graph.cat.location')
+    case 'organization': return t('explorer.graph.cat.organization')
+    case 'item': return t('explorer.graph.cat.item')
     case 'thing': return t('explorer.graph.cat.thing')
     case 'experience': return t('explorer.graph.cat.experience')
     case 'self': return levelLabel('soul')
@@ -488,6 +614,25 @@ export function rowsForEdge(edge: Pick<GraphEdge, 'source' | 'target' | 'kind'>,
   const a = byId.get(edge.source)
   const b = byId.get(edge.target)
   if (a === undefined || b === undefined) return []
+  const entityIds = (n: GraphNode): readonly string[] | null =>
+    n.kind === 'entity' && Array.isArray((n as { rowIds?: readonly string[] }).rowIds)
+      ? (n as { rowIds: readonly string[] }).rowIds
+      : null
+  const ea = entityIds(a)
+  const eb = entityIds(b)
+  if (ea !== null || eb !== null) {
+    let out = [...rows]
+    if (ea !== null) {
+      const set = new Set(ea)
+      out = out.filter((row) => set.has(row.id))
+    }
+    if (eb !== null) {
+      const set = new Set(eb)
+      out = out.filter((row) => set.has(row.id))
+    }
+    out.sort((x, y) => y.updated_at - x.updated_at)
+    return out
+  }
   const kwOf = (n: GraphNode): string | null => (n.kind === 'keyword' ? n.label : null)
   const prjOf = (n: GraphNode): string | null => (n.kind === 'project' ? n.label : null)
   const hasKw = (row: ExplorerRow, kw: string): boolean => {
@@ -567,6 +712,9 @@ export function rowsForNode(node: Pick<GraphNode, 'kind' | 'label'>, rows: reado
   let out: ExplorerRow[]
   if (node.kind === 'me') {
     out = [...rows]
+  } else if (node.kind === 'entity' && Array.isArray((node as { rowIds?: readonly string[] }).rowIds)) {
+    const ids = new Set((node as { rowIds: readonly string[] }).rowIds)
+    out = rows.filter((row) => ids.has(row.id))
   } else if (node.kind === 'keyword') {
     const kw = node.label.toLowerCase()
     out = rows.filter((row) => row.keywords.some((k) => k.toLowerCase() === kw))

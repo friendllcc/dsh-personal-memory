@@ -55,6 +55,8 @@ import { buildReflectMessage, consecutiveToolSteps, PLUGIN_SOURCE, REFLECT_MARKE
 import { isMeowSource } from './source.js'
 import { registerMemoryTools, setMemoryToolGate, setSemanticRuntime } from './tools.js'
 import { resolveSemantic, SemanticIndexer, SemanticRuntime, semanticRank, type SemanticConfig } from './semantic.js'
+import { extractPendingEntities, type CallLLM } from './entities.js'
+import { makeEntityCallLLM, resolveDefaultRoute, type LlmLike } from './entities-llm.js'
 import { resolveSlotText, setPromptLang } from './prompt-loader.js'
 
 /** 首次欢迎引导的 seen 记账 id（accessed 通道，非真实记忆 id；releaseSeen 不清除）。 */
@@ -65,6 +67,9 @@ import { collectDreamStates, headerOf, DreamStateBroadcast, type PersistedSessio
 
 export const name = 'dsh-personal-memory'
 export const inject = ['tools']
+
+/** 实体抽取的 LLM 接线（apply 时注入；未就绪时手动重建会提示）。 */
+let entityExtractCallLLM: CallLLM | null = null
 
 /** 记忆来源机器元数据，供前端与下游消费，解耦于自然语言文本。 */
 export interface MemorySourceMeta {
@@ -1239,6 +1244,21 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
   // 是 applyLiveConfig getter 化的活视图——运行时/召回闸/索引器读到的恒为最新值，
   // 设置页改动下一轮对话即生效。索引器恒启：关闭时每趟 pass 在 usable() 闸上零成本
   // 空转，开启即自动回填；设置保存路径另补 kick() 即时起步。全部 fail-soft。
+  // 实体抽取的 LLM 接线（只在手动重建 / dream 收尾调用，不参与写入路径）。
+  try {
+    const llm = (ctx as unknown as { reflect?: { get?: (n: string, s?: boolean) => unknown } }).reflect?.get?.('llm', false) as LlmLike | undefined
+    const route = resolveDefaultRoute(ctx)
+    if (llm !== undefined && llm !== null && typeof llm.stream === 'function' && route !== null) {
+      entityExtractCallLLM = makeEntityCallLLM(llm, route)
+      ctx.logger.info(`dsh-personal-memory: 实体抽取 LLM 已接线（${route.provider}/${route.model}）`)
+    } else {
+      entityExtractCallLLM = null
+      ctx.logger.warn('dsh-personal-memory: 实体抽取 LLM 未就绪（手动重建会提示不可用）')
+    }
+  } catch (e) {
+    entityExtractCallLLM = null
+    ctx.logger.warn(`dsh-personal-memory: 实体抽取接线失败（${e instanceof Error ? e.message : String(e)}）`)
+  }
   const semanticRuntime = new SemanticRuntime(resolved.semantic)
   setSemanticRuntime(semanticRuntime)
   const semanticIndexer = new SemanticIndexer(getDb('', resolved.projectDir), semanticRuntime, (m) => ctx.logger.info(m))
@@ -1253,6 +1273,18 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
   // 增量幂等；VACUUM INTO 失败静默——备份是兜底措施，绝不影响主流程）。
   const signalDreamState = (sessionId: string, state: 'dreaming' | 'dreamed' | 'active'): void => {
     broadcast.broadcast(sessionId, state)
+    // dream 收尾 = 记忆刚整理完，顺着抽一遍实体最自然；fire-and-forget，绝不阻塞收尾。
+    if (state === 'dreamed' && entityExtractCallLLM !== null) {
+      const wsE = windowIndex.get(sessionId)
+      if (wsE !== undefined) {
+        const llm = entityExtractCallLLM
+        void extractPendingEntities(getDb(wsE, resolved.projectDir), llm, { limit: 6, logger: ctx.logger })
+          .then((r) => {
+            if (r.processed > 0) ctx.logger.info(`dsh-personal-memory: dream 收尾抽取实体 ${r.processed} 条记忆 / ${r.entities} 个实体`)
+          })
+          .catch(() => {})
+      }
+    }
     if (state === 'dreamed' && resolved.backup.enabled) {
       const wsB = windowIndex.get(sessionId)
       if (wsB !== undefined) {
@@ -1964,6 +1996,65 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
           }
         },
       })
+      // ── 实体图谱 API（LLM 抽取；手动重建 / dream 收尾写入）─────────────────
+      // GET  /api/entities           → { nodes, edges, stats, llmReady }
+      // POST /api/entities-rebuild   → 清空（默认）并后台批量抽取；前端轮询 GET
+      registerOne({
+        kind: 'exact',
+        path: '/dsh-personal-memory/api/entities',
+        handler: (_req, res) => {
+          try {
+            if (!dbExists()) {
+              return writeJson(res, 200, {
+                nodes: [], edges: [],
+                stats: { entities: 0, relations: 0, pending: 0 },
+                llmReady: entityExtractCallLLM !== null,
+                capability: true,
+              })
+            }
+            const db = getDb('', resolved.projectDir)
+            const graph = db.entityGraph(500)
+            writeJson(res, 200, {
+              ...graph,
+              stats: db.entityStats(),
+              llmReady: entityExtractCallLLM !== null,
+              capability: true,
+            })
+          } catch (e) {
+            writeJson(res, 500, { ok: false, error: e instanceof Error ? e.message : String(e) })
+          }
+        },
+      })
+      registerOne({
+        kind: 'exact',
+        path: '/dsh-personal-memory/api/entities-rebuild',
+        handler: (req, res) => (async () => {
+          try {
+            const params = new URL((req as { url?: string }).url ?? '/', 'http://x').searchParams
+            const purge = params.get('purge') !== '0'
+            const limit = Math.min(Math.max(Number.parseInt(params.get('limit') ?? '500', 10) || 500, 1), 2000)
+            const db = getDb('', resolved.projectDir)
+            if (purge) db.clearEntities()
+            if (entityExtractCallLLM === null) {
+              return writeJson(res, 200, {
+                ok: false,
+                reason: 'llm-unavailable',
+                pending: db.entityStats().pending,
+                hint: '未拿到默认模型（agentDefaultModel / llm 服务）；请确认宿主模型已配置。',
+              })
+            }
+            const llm = entityExtractCallLLM
+            // 后台跑：28 条 ≈ 28 次调用，不能让 HTTP 干等；前端轮询 /api/entities。
+            void extractPendingEntities(db, llm, { limit, logger: ctx.logger })
+              .then((r) => ctx.logger.info(`dsh-personal-memory: 手动重建实体完成（${r.processed} 条记忆 / ${r.entities} 个实体 / 失败 ${r.failed}）`))
+              .catch((e) => ctx.logger.warn(`dsh-personal-memory: 手动重建实体失败：${e instanceof Error ? e.message : String(e)}`))
+            writeJson(res, 200, { ok: true, started: true, pending: db.entityStats().pending })
+          } catch (e) {
+            writeJson(res, 500, { ok: false, error: e instanceof Error ? e.message : String(e) })
+          }
+        })(),
+      })
+
       // ── 记忆库手动管理 API（v0.3.0 记忆管理标签页：用户在界面上增/改/删自己的
       //    记忆）。门控三档是「记忆参与会话」的语义，不挡用户管自己的库（与只读
       //    路由同口径）。单路由三方法分流（skip-dreams 同款）：

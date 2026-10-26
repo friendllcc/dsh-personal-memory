@@ -267,6 +267,43 @@ export class MemoryDb {
       updated_at INTEGER NOT NULL,
       PRIMARY KEY (level, id)
     )`)
+    // ── 实体图谱（LLM 抽取；只在手动重建 / dream 收尾时写入）──────────────
+    // 为什么单独建表而不是塞进七层：实体是派生数据，可随时重建；与记忆本体解耦，
+    // 抽取失败/清空都不会影响记忆。memory_entities 带来源记忆 id，保证每个节点可回溯。
+    this.db.exec(`CREATE TABLE IF NOT EXISTS entities (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'concept',
+      mention_count INTEGER NOT NULL DEFAULT 1,
+      first_seen INTEGER NOT NULL,
+      last_seen INTEGER NOT NULL
+    )`)
+    this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_entities_name ON entities(name)')
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(type)')
+    this.db.exec(`CREATE TABLE IF NOT EXISTS memory_entities (
+      memory_id TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'llm',
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (memory_id, entity_id)
+    )`)
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_mem_entities_entity ON memory_entities(entity_id)')
+    this.db.exec(`CREATE TABLE IF NOT EXISTS entity_relations (
+      id TEXT PRIMARY KEY,
+      from_entity TEXT NOT NULL,
+      to_entity TEXT NOT NULL,
+      relation_type TEXT NOT NULL,
+      memory_id TEXT,
+      weight INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL
+    )`)
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_relations_from ON entity_relations(from_entity)')
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_relations_to ON entity_relations(to_entity)')
+    // 已抽过的记忆（抽到 0 个实体也算已处理，防重复烧 LLM）
+    this.db.exec(`CREATE TABLE IF NOT EXISTS entity_extract_done (
+      memory_id TEXT PRIMARY KEY,
+      at INTEGER NOT NULL
+    )`)
     this.upgrade()
   }
 
@@ -584,6 +621,170 @@ export class MemoryDb {
    *  缓存必须能重新打开，否则下一个 getDb 拿到僵尸句柄直接 ERR_INVALID_STATE）。 */
   isClosed(): boolean {
     return this.closedFlag
+  }
+
+  // ── 实体图谱存储 ──────────────────────────────────────────────────────────
+
+  /** 按名字 upsert（LLM 会给规范名；同名视为同一实体，mention_count 累加）。 */
+  upsertEntity(name: string, type: string, now = Date.now()): string {
+    const existing = this.db.prepare('SELECT id, mention_count FROM entities WHERE name = ?').get(name) as
+      | { id: string; mention_count: number }
+      | undefined
+    if (existing !== undefined) {
+      this.db
+        .prepare('UPDATE entities SET mention_count = mention_count + 1, last_seen = ?, type = CASE WHEN ? = \'\' THEN type ELSE ? END WHERE id = ?')
+        .run(now, type, type, existing.id)
+      return existing.id
+    }
+    const id = `ent_${Math.random().toString(36).slice(2, 10)}_${now.toString(36)}`
+    this.db
+      .prepare('INSERT INTO entities (id, name, type, mention_count, first_seen, last_seen) VALUES (?, ?, ?, 1, ?, ?)')
+      .run(id, name, type, now, now)
+    return id
+  }
+
+  findEntityByName(name: string): { id: string; name: string; type: string | null } | undefined {
+    return this.db.prepare('SELECT id, name, type FROM entities WHERE name = ?').get(name) as
+      | { id: string; name: string; type: string | null }
+      | undefined
+  }
+
+  linkMemoryEntity(memoryId: string, entityId: string, source = 'llm', now = Date.now()): void {
+    try {
+      this.db
+        .prepare('INSERT OR IGNORE INTO memory_entities (memory_id, entity_id, source, created_at) VALUES (?, ?, ?, ?)')
+        .run(memoryId, entityId, source, now)
+    } catch { /* 忽略 */ }
+  }
+
+  /** 清掉某条记忆的实体关联与它产生的关系（重抽前调用）。 */
+  clearMemoryEntities(memoryId: string): void {
+    try {
+      this.db.prepare('DELETE FROM entity_relations WHERE memory_id = ?').run(memoryId)
+      this.db.prepare('DELETE FROM memory_entities WHERE memory_id = ?').run(memoryId)
+    } catch { /* 忽略 */ }
+  }
+
+  /**
+   * 写一条关系。**不按 from/to/type 去重**：同一条关系可能来自多条记忆，
+   * 每行保留自己的 memory_id（来源可回溯）；读取时在 entityGraph 里聚合 weight。
+   * 同一条记忆重抽会先 clearMemoryEntities 清旧行，不会重复。
+   */
+  upsertRelation(fromEntity: string, toEntity: string, relationType: string, memoryId: string | null, now = Date.now()): void {
+    if (fromEntity === toEntity) return
+    try {
+      const id = `rel_${Math.random().toString(36).slice(2, 10)}_${now.toString(36)}`
+      this.db
+        .prepare('INSERT INTO entity_relations (id, from_entity, to_entity, relation_type, memory_id, weight, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)')
+        .run(id, fromEntity, toEntity, relationType, memoryId, now)
+    } catch { /* 忽略 */ }
+  }
+
+  /** 还没抽过实体的记忆（按 updated_at 降序）。 */
+  rowsNeedingEntityExtraction(limit = 50): string[] {
+    try {
+      return (
+        this.db
+          .prepare(
+            `SELECT m.id AS id, m.updated_at AS updated_at FROM (
+               SELECT id, updated_at FROM soul UNION ALL SELECT id, updated_at FROM user
+               UNION ALL SELECT id, updated_at FROM project UNION ALL SELECT id, updated_at FROM fact
+               UNION ALL SELECT id, updated_at FROM lesson UNION ALL SELECT id, updated_at FROM topic
+               UNION ALL SELECT id, updated_at FROM rules
+             ) m
+             WHERE NOT EXISTS (SELECT 1 FROM entity_extract_done d WHERE d.memory_id = m.id)
+             ORDER BY m.updated_at DESC LIMIT ?`,
+          )
+          .all(limit) as Array<{ id: string }>
+      ).map((r) => r.id)
+    } catch {
+      return []
+    }
+  }
+
+  markEntityExtracted(memoryId: string, now = Date.now()): void {
+    try {
+      this.db.prepare('INSERT INTO entity_extract_done (memory_id, at) VALUES (?, ?) ON CONFLICT(memory_id) DO UPDATE SET at = excluded.at').run(memoryId, now)
+    } catch { /* 忽略 */ }
+  }
+
+  /** 实体图：节点带来源记忆 id，边带关系类型 / 来源记忆 id。 */
+  entityGraph(limit = 500): {
+    nodes: Array<{ id: string; name: string; type: string; count: number; rowIds: string[] }>
+    edges: Array<{ source: string; target: string; relation_type: string; weight: number; memoryIds: string[] }>
+  } {
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT e.id, e.name, e.type, e.mention_count,
+                  (SELECT COUNT(*) FROM memory_entities me WHERE me.entity_id = e.id) AS links
+           FROM entities e ORDER BY links DESC, e.mention_count DESC, e.name LIMIT ?`,
+        )
+        .all(limit) as Array<{ id: string; name: string; type: string; mention_count: number; links: number }>
+      const nodes = rows.filter((r) => Number(r.links) > 0).map((r) => {
+        const ids = this.db.prepare('SELECT memory_id FROM memory_entities WHERE entity_id = ?').all(r.id) as Array<{ memory_id: string }>
+        return { id: r.id, name: r.name, type: r.type, count: Number(r.links), rowIds: ids.map((x) => x.memory_id) }
+      })
+      const ids = new Set(nodes.map((n) => n.id))
+      const rels = this.db
+        .prepare('SELECT from_entity, to_entity, relation_type, memory_id, weight FROM entity_relations')
+        .all() as Array<{ from_entity: string; to_entity: string; relation_type: string; memory_id: string | null; weight: number }>
+      const merged = new Map<string, { source: string; target: string; relation_type: string; weight: number; memoryIds: Set<string> }>()
+      for (const r of rels) {
+        if (!ids.has(r.from_entity) || !ids.has(r.to_entity)) continue
+        const key = `${r.from_entity}\u0000${r.to_entity}\u0000${r.relation_type}`
+        const cur = merged.get(key) ?? { source: r.from_entity, target: r.to_entity, relation_type: r.relation_type, weight: 0, memoryIds: new Set<string>() }
+        cur.weight += Number(r.weight)
+        if (r.memory_id !== null) cur.memoryIds.add(r.memory_id)
+        merged.set(key, cur)
+      }
+      return {
+        nodes,
+        edges: [...merged.values()].map((e) => ({ ...e, memoryIds: [...e.memoryIds] })),
+      }
+    } catch {
+      return { nodes: [], edges: [] }
+    }
+  }
+
+  entityStats(): { entities: number; relations: number; pending: number } {
+    try {
+      const entities = (this.db.prepare('SELECT COUNT(*) AS c FROM entities e WHERE EXISTS (SELECT 1 FROM memory_entities me WHERE me.entity_id = e.id)').get() as { c: number }).c
+      const relations = (this.db.prepare('SELECT COUNT(*) AS c FROM (SELECT 1 FROM entity_relations GROUP BY from_entity, to_entity, relation_type)').get() as { c: number }).c
+      const pending = (this.db
+        .prepare(
+          `SELECT COUNT(*) AS c FROM (
+             SELECT id FROM soul UNION ALL SELECT id FROM user UNION ALL SELECT id FROM project
+             UNION ALL SELECT id FROM fact UNION ALL SELECT id FROM lesson UNION ALL SELECT id FROM topic
+             UNION ALL SELECT id FROM rules
+           ) m WHERE NOT EXISTS (SELECT 1 FROM entity_extract_done d WHERE d.memory_id = m.id)`,
+        )
+        .get() as { c: number }).c
+      return { entities: Number(entities), relations: Number(relations), pending: Number(pending) }
+    } catch {
+      return { entities: 0, relations: 0, pending: 0 }
+    }
+  }
+
+  /** 删除没有任何记忆链接的孤儿实体（重抽后旧实体可能失去全部来源）。 */
+  deleteOrphanEntities(): number {
+    try {
+      const res = this.db
+        .prepare('DELETE FROM entities WHERE NOT EXISTS (SELECT 1 FROM memory_entities me WHERE me.entity_id = entities.id)')
+        .run()
+      return Number(res.changes)
+    } catch {
+      return 0
+    }
+  }
+
+  clearEntities(): void {
+    try {
+      this.db.prepare('DELETE FROM entity_relations').run()
+      this.db.prepare('DELETE FROM memory_entities').run()
+      this.db.prepare('DELETE FROM entities').run()
+      this.db.prepare('DELETE FROM entity_extract_done').run()
+    } catch { /* 忽略 */ }
   }
 
   close(): void {

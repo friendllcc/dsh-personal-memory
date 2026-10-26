@@ -29,24 +29,20 @@ import { createElement, useCallback, useEffect, useMemo, useRef, useState, useSy
 import { createPortal } from 'react-dom'
 import { onUiLocaleChange, t } from './i18n/index.js'
 import {
-  buildPersonalGraph,
   cardSnippet,
   cardTitle,
   CATEGORY_COLORS,
   CATEGORY_ORDER,
   categoryLabel,
-  collectMeAliases,
   computeGraphLayout,
   EXPLORER_LEVELS,
   filterGraphByDepth,
   filterRows,
-  foldGraphAliases,
   formatWhen,
   hygieneRows,
   LEVEL_COLORS,
   levelHasProject,
   levelLabel,
-  ME_NODE_ID,
   nodeCategory,
   nodeDepths,
   PROJECT_GLOBAL_KEY,
@@ -647,7 +643,7 @@ interface GraphProps {
   /** 已按跳数/分类过滤好的子图（panel 里算好传进来，布局只画它）。 */
   graph: MemoryGraph
   /** 钉在画布中心的节点（默认「我」，双击重聚焦后是聚焦节点）。 */
-  rootId: string
+  rootId: string | null
   selectedId: string | null
   /** 当前在抽屉里展开的边（高亮描边；null=没有）。 */
   selectedEdge: GraphEdge | null
@@ -664,10 +660,12 @@ const EDGE_COLORS = {
   mine: 'rgba(110,168,254,.30)',
   project: 'rgba(62,198,160,.32)',
   cooc: 'rgba(160,170,190,.26)',
+  relation: 'rgba(110,168,254,.34)',
 } as const
 
 /** 边类型的短文案（边 tooltip / 关系详情抽屉副标题）。 */
-function edgeKindLabel(kind: GraphEdge['kind']): string {
+function edgeKindLabel(kind: GraphEdge['kind'], relationType?: string): string {
+  if (kind === 'relation') return relationType ?? t('explorer.graph.edge.relation')
   return t(kind === 'mine' ? 'explorer.graph.edge.mine' : kind === 'project' ? 'explorer.graph.edge.project' : 'explorer.graph.edge.cooc')
 }
 
@@ -695,7 +693,7 @@ const INITIAL_VIEW: GraphViewTransform = { k: 1, x: 0, y: 0 }
 function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNodeClick, onNodeDoubleClick, onEdgeClick, onBackgroundDoubleClick }: GraphProps) {
   const width = 760
   const height = 500
-  const layout = useMemo(() => computeGraphLayout(graph, width, height, 240, rootId), [graph, rootId])
+  const layout = useMemo(() => computeGraphLayout(graph, width, height, 240, rootId ?? undefined), [graph, rootId])
   const [hoverId, setHoverId] = useState<string | null>(null)
   const [view, setView] = useState<GraphViewTransform>(INITIAL_VIEW)
   /** 手拖过的节点位置覆盖（优先于力导布局结果；子图变化即作废）。 */
@@ -815,14 +813,14 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
         const touched = focusId !== null && (edge.source === focusId || edge.target === focusId)
         const edgeSelected = selectedEdge !== null && sameEdge(selectedEdge, edge)
         const lit = touched || edgeSelected
-        const tip = `${labelsById.get(edge.source) ?? edge.source} ↔ ${labelsById.get(edge.target) ?? edge.target} · ${edgeKindLabel(edge.kind)} · ${edge.weight}`
+        const tip = `${labelsById.get(edge.source) ?? edge.source} ↔ ${labelsById.get(edge.target) ?? edge.target} · ${edgeKindLabel(edge.kind, edge.relation_type)} · ${edge.weight}`
         return createElement('g', { key: `${edge.source}->${edge.target}`, className: 'meow-explorer-gedge' },
           // 可视细线（不接管事件；热区线负责交互，CSS hover 提亮这条）
           createElement('line', {
             className: 'meow-explorer-gedge-line',
             x1: a.x, y1: a.y, x2: b.x, y2: b.y,
             stroke: lit ? 'rgba(110,168,254,.85)' : EDGE_COLORS[edge.kind],
-            strokeWidth: edge.kind === 'mine' ? 1.2 : edgeWidth(edge.weight) + (lit ? 0.8 : 0),
+            strokeWidth: edge.kind === 'relation' ? 1 + Math.min(1.4, (edge.weight - 1) * 0.3) + (lit ? 0.6 : 0) : edge.kind === 'mine' ? 1.2 : edgeWidth(edge.weight) + (lit ? 0.8 : 0),
             opacity: focusId !== null && !lit ? 0.12 : 1,
             style: { pointerEvents: 'none' },
           }),
@@ -846,7 +844,7 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
         const p = posOf(node.id)
         if (p === undefined) return null
         const isSelected = node.id === selectedId
-        const isRoot = node.id === rootId
+        const isRoot = rootId !== null && node.id === rootId
         const cat = nodeCategory(node)
         const shared = {
           className: 'meow-explorer-gnode',
@@ -879,7 +877,9 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
         const color = CATEGORY_COLORS[cat]
         const labelOffset = node.kind === 'project' ? radius + 10 : radius + 6
         // 标签降噪：低频关键词默认藏标签，悬停/选中及其邻居时浮现
-        const showLabel = node.kind !== 'keyword' || node.count >= 2 || (focusId !== null && neighbors.has(node.id))
+        // 标签全显（用户反馈「有的实体不显示名字」）；长名字截断，完整名在 tooltip/抽屉里
+        const showLabel = true
+        const shownLabel = node.label.length > 10 ? `${node.label.slice(0, 10)}…` : node.label
         return createElement('g', { key: node.id, ...shared },
           createElement('title', null, nodeTip(node)),
           // 聚焦根节点的外圈描边提示（双击重聚焦的视觉锚）
@@ -897,7 +897,7 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
               cx: p.x, cy: p.y, r: radius, fill: color, fillOpacity: .85,
               stroke: isSelected ? '#fff' : color, strokeWidth: isSelected ? 2.5 : 1,
             }),
-          showLabel && createElement('text', { x: p.x + labelOffset, y: p.y + 3.5 }, node.label),
+          showLabel && createElement('text', { x: p.x + labelOffset, y: p.y + 3.5 }, shownLabel),
         )
       }),
     ),
@@ -973,7 +973,7 @@ function EdgeDrawer({ edge, graph, rows, onClose, onOpenInManage }: EdgeDrawerPr
       createElement('span', {
         className: 'meow-explorer-chip-dot',
         style: { background: '#6ea8fe' },
-        title: edgeKindLabel(edge.kind),
+        title: edgeKindLabel(edge.kind, edge.relation_type),
       }),
       createElement('h3', { title: `${aLabel} ↔ ${bLabel}` }, t('explorer.drawer.edgeTitle', { a: aLabel, b: bLabel })),
       createElement('span', { className: 'meow-explorer-drawer-count' }, t('explorer.drawer.count', { n: linked.length })),
@@ -1229,6 +1229,13 @@ const ALL_MAX_PAGES = 10
 
 type PanelTab = 'overview' | 'timeline' | 'manage' | 'graph' | 'settings'
 
+interface EntityPayload {
+  nodes: Array<{ id: string; name: string; type: string; count: number; rowIds: string[] }>
+  edges: Array<{ source: string; target: string; relation_type: string; weight: number; memoryIds: string[] }>
+  stats: { entities: number; relations: number; pending: number }
+  llmReady: boolean
+}
+
 interface PanelProps { onClose: () => void }
 
 function MemoryExplorerPanel({ onClose }: PanelProps) {
@@ -1262,6 +1269,9 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
   const [focusRoot, setFocusRoot] = useState<string | null>(null)
   const [hiddenCats, setHiddenCats] = useState<ReadonlySet<GraphCategory>>(() => new Set())
   const [viewResetSeq, setViewResetSeq] = useState(0)
+  // 实体图谱（LLM 抽取结果；只在手动重建 / dream 收尾更新）
+  const [entityData, setEntityData] = useState<EntityPayload | null>(null)
+  const [entityStatus, setEntityStatus] = useState<'idle' | 'loading' | 'ready' | 'error' | 'rebuilding'>('idle')
   // 语言切换时强制重渲染（onUiLocaleChange 注册即回调一次，卸载即退订）
   const [, setLocaleTick] = useState(0)
   const seqRef = useRef(0)
@@ -1346,14 +1356,97 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
     return () => window.clearTimeout(timer)
   }, [filter.query, filter.level])
 
-  // 关系网：全量缓存 → 全图（用户自报姓名/别名折叠进「我」，v0.4.0）→ 按跳数/
-  // 重聚焦根过滤 → 按图例关掉的分类过滤（布局只跑在最终子图上，根节点钉中心）
-  const fullGraph = useMemo(() => foldGraphAliases(buildPersonalGraph(allRows), collectMeAliases(allRows)), [allRows])
-  const graphRootId = focusRoot ?? ME_NODE_ID
+  const readEntities = useCallback(async (): Promise<EntityPayload | null> => {
+    try {
+      return await apiFetch<EntityPayload>(`${API_BASE}/entities`)
+    } catch {
+      return null
+    }
+  }, [])
+
+  const fetchEntities = useCallback(async (): Promise<EntityPayload | null> => {
+    setEntityStatus('loading')
+    const data = await readEntities()
+    if (data === null) {
+      setEntityStatus('error')
+      return null
+    }
+    setEntityData(data)
+    setEntityStatus('ready')
+    return data
+  }, [readEntities])
+
+  useEffect(() => {
+    if (tab === 'graph') void fetchEntities()
+  }, [tab, fetchEntities])
+
+  // dream 收尾会在后台补抽；面板开着时每 5s 拉一次，pending=0 自动停。
+  useEffect(() => {
+    if (tab !== 'graph' || entityData === null || entityData.stats.pending === 0) return
+    const timer = setInterval(() => {
+      void readEntities().then((data) => { if (data !== null) setEntityData(data) })
+    }, 5000)
+    return () => clearInterval(timer)
+  }, [tab, entityData?.stats.pending, readEntities])
+
+  /** 手动重建：清空 → 后台逐条调 LLM → 轮询到 pending=0。 */
+  const rebuildEntities = useCallback(async (): Promise<void> => {
+    if (entityStatus === 'rebuilding') return
+    setEntityStatus('rebuilding')
+    setFeedback(null)
+    try {
+      const res = await fetch(`${API_BASE}/entities-rebuild`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      })
+      const json = (await res.json()) as { ok?: boolean; hint?: string; reason?: string }
+      if (json.ok === false) {
+        setFeedback({ kind: 'err', text: String(json.hint ?? json.reason ?? '实体抽取不可用') })
+        setEntityStatus('ready')
+        return
+      }
+      for (let i = 0; i < 150; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 2000))
+        const data = await readEntities()
+        if (data !== null) setEntityData(data)
+        if (data !== null && data.stats.pending === 0) break
+      }
+      await fetchEntities()
+    } catch (e) {
+      setFeedback({ kind: 'err', text: e instanceof Error ? e.message : String(e) })
+      setEntityStatus('error')
+    }
+  }, [entityStatus, readEntities, fetchEntities])
+
+  // 实体表 → 图管线（GraphView 只认 nodes/edges）
+  const fullGraph = useMemo(() => {
+    const data = entityData
+    if (data === null) return { nodes: [], edges: [] }
+    return {
+      nodes: data.nodes.map((n) => ({
+        id: `ent:${n.id}`,
+        label: n.name,
+        kind: 'entity' as const,
+        count: n.count,
+        levels: {},
+        entityType: n.type,
+        rowIds: n.rowIds,
+      })),
+      edges: data.edges.map((e) => ({
+        source: `ent:${e.source}`,
+        target: `ent:${e.target}`,
+        weight: e.weight,
+        kind: 'relation' as const,
+        relation_type: e.relation_type,
+      })),
+    }
+  }, [entityData])
+
   const graph = useMemo(() => {
     let g = fullGraph
-    if (hops > 0 && g.nodes.some((n) => n.id === graphRootId)) {
-      g = filterGraphByDepth(g, nodeDepths(g, graphRootId), hops)
+    if (focusRoot !== null && hops > 0 && g.nodes.some((n) => n.id === focusRoot)) {
+      g = filterGraphByDepth(g, nodeDepths(g, focusRoot), hops)
     }
     if (hiddenCats.size > 0) {
       const kept = new Set(g.nodes.filter((n) => !hiddenCats.has(nodeCategory(n))).map((n) => n.id))
@@ -1363,7 +1456,7 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
       }
     }
     return g
-  }, [fullGraph, hops, graphRootId, hiddenCats])
+  }, [fullGraph, hops, focusRoot, hiddenCats])
   // 图例只列「当前子图里出现的分类 ∪ 被手动关掉但全图里还有的分类」（后者要能点回来）
   const legendCats = useMemo(() => {
     const present = new Set<GraphCategory>()
@@ -1381,7 +1474,7 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
   useEffect(() => {
     if (drawerEdge !== null && !graph.edges.some((e) => sameEdge(e, drawerEdge))) setDrawerEdge(null)
   }, [graph, drawerEdge])
-  // 重聚焦的根若被图例关掉/从全图消失 → 回退到「我」
+  // 重聚焦的根若被图例关掉/从全图消失 → 回到全部
   useEffect(() => {
     if (focusRoot === null) return
     const node = fullGraph.nodes.find((n) => n.id === focusRoot)
@@ -1630,68 +1723,86 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
         createElement(SettingsTab),
       ),
 
-      // ── 关系网标签页：以人为中心的多跳图谱（跳数可控/重聚焦/分类开关/缩放平移）+ 节点抽屉 ──
+      // ── 关系网标签页：LLM 实体图谱（手动重建 / dream 收尾抽取）───────────
       error === '' && tab === 'graph' && createElement('div', { className: 'meow-explorer-body', 'data-view': 'graph' },
-        createElement('div', { className: 'meow-explorer-graphbar', role: 'group', 'aria-label': t('explorer.graph.hops.label') },
-          // 重聚焦中：提供回到「我」的出口（双击空白处同效）
+        createElement('div', { className: 'meow-explorer-graphbar', role: 'group', 'aria-label': t('explorer.graph.rebuild') },
+          createElement('button', {
+            className: 'meow-explorer-chip',
+            disabled: entityStatus === 'rebuilding',
+            title: t('explorer.graph.rebuild'),
+            onClick: () => void rebuildEntities(),
+          }, entityStatus === 'rebuilding' ? t('explorer.graph.rebuilding') : t('explorer.graph.rebuild')),
+          entityData !== null && createElement('span', { className: 'meow-explorer-graphbar-label' },
+            entityStatus === 'rebuilding'
+              ? t('explorer.graph.rebuilding')
+              : t('explorer.graph.entityStats', {
+                  entities: String(entityData.stats.entities),
+                  relations: String(entityData.stats.relations),
+                  pending: String(entityData.stats.pending),
+                })),
+          createElement('span', { className: 'meow-explorer-spacer' }),
           focusRoot !== null && createElement('button', {
             className: 'meow-explorer-chip',
-            'data-active': 'true',
+            title: t('explorer.graph.backToAll'),
             onClick: () => setFocusRoot(null),
-          }, t('explorer.graph.backToMe')),
-          createElement('span', { className: 'meow-explorer-spacer' }),
-          createElement('span', { className: 'meow-explorer-graphbar-label' }, t('explorer.graph.hops.label')),
-          ...([1, 2, 0] as const).map((h) => createElement('button', {
-            key: h,
-            className: 'meow-explorer-chip',
-            'data-active': hops === h ? 'true' : 'false',
-            onClick: () => setHops(h),
-          }, t(h === 1 ? 'explorer.graph.hops.one' : h === 2 ? 'explorer.graph.hops.two' : 'explorer.graph.hops.all'))),
+          }, `\u2190 ${t('explorer.graph.backToAll')}`),
+          ...(focusRoot !== null
+            ? ([1, 2, 0] as const).map((h) => createElement('button', {
+                key: h,
+                className: 'meow-explorer-chip',
+                title: t('explorer.graph.hops.label'),
+                'data-active': hops === h ? 'true' : 'false',
+                onClick: () => setHops(h),
+              }, t(h === 1 ? 'explorer.graph.hops.one' : h === 2 ? 'explorer.graph.hops.two' : 'explorer.graph.hops.all')))
+            : []),
           createElement('button', {
             className: 'meow-explorer-chip',
             title: t('explorer.graph.resetView'),
             onClick: () => setViewResetSeq((v) => v + 1),
-          }, t('explorer.graph.resetView')),
+          }, '\u21ba'),
         ),
-        createElement('div', { className: 'meow-explorer-graphwrap' },
-          createElement(GraphView, {
-            graph,
-            rootId: graphRootId,
-            selectedId: drawerNode?.id ?? null,
-            selectedEdge: drawerEdge,
-            viewResetSeq,
-            onNodeClick: (node) => {
-              setDrawerEdge(null)
-              setDrawerNode((cur) => (cur?.id === node.id ? null : node))
-            },
-            onNodeDoubleClick: (node) => {
-              // 双击 = 以此为中心（双击「我」= 回默认）；抽屉收起防遮挡
-              setFocusRoot(node.id === ME_NODE_ID ? null : node.id)
-              setDrawerNode(null)
-              setDrawerEdge(null)
-            },
-            onEdgeClick: (edge) => {
-              setDrawerNode(null)
-              setDrawerEdge((cur) => (cur !== null && sameEdge(cur, edge) ? null : edge))
-            },
-            onBackgroundDoubleClick: () => setFocusRoot(null),
-          }),
+        createElement('div', { className: 'meow-explorer-graphwrap', title: t('explorer.graph.clickHint') },
+          (entityStatus === 'idle' || entityStatus === 'loading') && entityData === null
+            ? createElement('div', { className: 'meow-explorer-status' }, t('explorer.loading'))
+            : entityStatus === 'error'
+              ? createElement('div', { className: 'meow-explorer-status' }, t('explorer.graph.entityEmpty'))
+              : entityData === null || entityData.stats.entities === 0
+                ? createElement('div', { className: 'meow-explorer-status' },
+                    entityData !== null && entityData.llmReady === false
+                      ? t('explorer.graph.llmOff')
+                      : t('explorer.graph.entityEmpty'))
+                : createElement(GraphView, {
+                    graph,
+                    rootId: focusRoot,
+                    selectedId: drawerNode?.id ?? null,
+                    selectedEdge: drawerEdge,
+                    viewResetSeq,
+                    onNodeClick: (node) => {
+                      setDrawerEdge(null)
+                      setDrawerNode((cur) => (cur?.id === node.id ? null : node))
+                    },
+                    onNodeDoubleClick: (node) => {
+                      setFocusRoot(node.id === focusRoot ? null : node.id)
+                      setDrawerNode(null)
+                      setDrawerEdge(null)
+                    },
+                    onEdgeClick: (edge) => {
+                      setDrawerNode(null)
+                      setDrawerEdge((cur) => (cur !== null && sameEdge(cur, edge) ? null : edge))
+                    },
+                    onBackgroundDoubleClick: () => setFocusRoot(null),
+                  }),
         ),
         createElement('div', { className: 'meow-explorer-legend' },
-          // 图例可点 = 分类显隐开关（「我」恒显）；点掉的分类划线变淡，可再点回来
-          ...legendCats.map((cat) => cat === 'me'
-            ? createElement('span', { key: cat, className: 'meow-explorer-legend-item' },
-              createElement('span', { className: 'meow-explorer-chip-dot', style: { background: CATEGORY_COLORS[cat] } }),
-              createElement('span', { className: 'meow-explorer-legend-text' }, categoryLabel(cat)))
-            : createElement('button', {
-              key: cat,
-              className: 'meow-explorer-legend-item',
-              'data-off': hiddenCats.has(cat) ? 'true' : 'false',
-              title: categoryLabel(cat),
-              onClick: () => toggleCat(cat),
-            },
-              createElement('span', { className: 'meow-explorer-chip-dot', style: { background: CATEGORY_COLORS[cat] } }),
-              createElement('span', { className: 'meow-explorer-legend-text' }, categoryLabel(cat)))),
+          ...legendCats.map((cat) => createElement('button', {
+            key: cat,
+            className: 'meow-explorer-legend-item',
+            'data-off': hiddenCats.has(cat) ? 'true' : 'false',
+            title: categoryLabel(cat),
+            onClick: () => toggleCat(cat),
+          },
+            createElement('span', { className: 'meow-explorer-chip-dot', style: { background: CATEGORY_COLORS[cat] } }),
+            createElement('span', { className: 'meow-explorer-legend-text' }, categoryLabel(cat)))),
           createElement('span', { style: { opacity: .55 } }, t('explorer.graph.clickHint')),
         ),
       ),

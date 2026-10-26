@@ -41,6 +41,7 @@ mytrashbin/
 !/tests/
 /tests/*
 !/tests/retrieval.mjs
+!/tests/entities-llm.mjs
 
 # 其他非正式的版本记录
 CHANGELOG.md
