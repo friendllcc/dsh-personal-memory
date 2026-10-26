@@ -2022,9 +2022,10 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
             }
             const db = getDb('', resolved.projectDir)
             const graph = db.entityGraph(500)
+            const pending = db.entityStats().pending
             writeJson(res, 200, {
               ...graph,
-              stats: db.entityStats(),
+              stats: { entities: graph.nodes.length, relations: graph.edges.length, pending },
               llmReady: resolveEntityLLM() !== null,
               capability: true,
             })
@@ -2062,6 +2063,28 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
             writeJson(res, 500, { ok: false, error: e instanceof Error ? e.message : String(e) })
           }
         })(),
+      })
+
+      registerOne({
+        kind: 'exact',
+        path: '/dsh-personal-memory/api/entities-clear',
+        handler: (req, res) => {
+          try {
+            if (((req as { method?: string }).method ?? 'GET') !== 'POST') {
+              return writeJson(res, 404, { ok: false, error: 'not-found' })
+            }
+            if (!dbExists()) return writeJson(res, 200, { ok: true, stats: { entities: 0, relations: 0, pending: 0 } })
+            const db = getDb('', resolved.projectDir)
+            db.clearEntities()
+            const graph = db.entityGraph(500)
+            writeJson(res, 200, {
+              ok: true,
+              stats: { entities: graph.nodes.length, relations: graph.edges.length, pending: db.entityStats().pending },
+            })
+          } catch (e) {
+            writeJson(res, 500, { ok: false, error: e instanceof Error ? e.message : String(e) })
+          }
+        },
       })
 
       // ── 记忆库手动管理 API（v0.3.0 记忆管理标签页：用户在界面上增/改/删自己的

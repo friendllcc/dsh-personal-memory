@@ -1231,7 +1231,7 @@ type PanelTab = 'overview' | 'timeline' | 'manage' | 'graph' | 'settings'
 
 interface EntityPayload {
   nodes: Array<{ id: string; name: string; type: string; count: number; rowIds: string[] }>
-  edges: Array<{ source: string; target: string; relation_type: string; weight: number; memoryIds: string[] }>
+  edges: Array<{ source: string; target: string; relation_type: string; weight: number; memoryIds: string[]; origin?: 'llm' | 'memory' }>
   stats: { entities: number; relations: number; pending: number }
   llmReady: boolean
 }
@@ -1272,6 +1272,7 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
   // 实体图谱（LLM 抽取结果；只在手动重建 / dream 收尾更新）
   const [entityData, setEntityData] = useState<EntityPayload | null>(null)
   const [entityStatus, setEntityStatus] = useState<'idle' | 'loading' | 'ready' | 'error' | 'rebuilding'>('idle')
+  const [clearArmed, setClearArmed] = useState(false)
   // 语言切换时强制重渲染（onUiLocaleChange 注册即回调一次，卸载即退订）
   const [, setLocaleTick] = useState(0)
   const seqRef = useRef(0)
@@ -1429,6 +1430,42 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
     }
   }, [entityStatus, readEntities, fetchEntities])
 
+  /** 清空图谱（两段确认，防误点）。 */
+  const clearEntityGraph = useCallback(async (): Promise<void> => {
+    if (!clearArmed) {
+      setClearArmed(true)
+      setTimeout(() => setClearArmed(false), 3000)
+      return
+    }
+    setClearArmed(false)
+    try {
+      const res = await fetch(`${API_BASE}/entities-clear`, { method: 'POST' })
+      const json = (await res.json()) as {
+        ok?: boolean
+        error?: string
+        stats?: { entities: number; relations: number; pending: number }
+      }
+      if (json.ok !== true) {
+        setFeedback({ kind: 'err', text: json.error ?? '清空失败' })
+        return
+      }
+      // clearEntities 会连 entity_extract_done 一起清掉 → pending 回到「全部记忆」，
+      // 所以这里用服务端返回的 stats（而不是写死 0），用户点重建时知道要抽多少。
+      setEntityData((prev) => ({
+        nodes: [],
+        edges: [],
+        stats: json.stats ?? { entities: 0, relations: 0, pending: 0 },
+        llmReady: prev?.llmReady ?? false,
+      }))
+      setEntityStatus('ready')
+      setFocusRoot(null)
+      setDrawerNode(null)
+      setDrawerEdge(null)
+    } catch (e) {
+      setFeedback({ kind: 'err', text: e instanceof Error ? e.message : String(e) })
+    }
+  }, [clearArmed])
+
   // 实体表 → 图管线（GraphView 只认 nodes/edges）
   const fullGraph = useMemo(() => {
     const data = entityData
@@ -1447,7 +1484,7 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
         source: `ent:${e.source}`,
         target: `ent:${e.target}`,
         weight: e.weight,
-        kind: 'relation' as const,
+        kind: (e.origin === 'memory' ? 'cooc' : 'relation') as 'cooc' | 'relation',
         relation_type: e.relation_type,
       })),
     }
@@ -1742,6 +1779,11 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
             title: t('explorer.graph.rebuild'),
             onClick: () => void rebuildEntities(),
           }, entityStatus === 'rebuilding' ? t('explorer.graph.rebuilding') : t('explorer.graph.rebuild')),
+          createElement('button', {
+            className: 'meow-explorer-chip',
+            title: t('explorer.graph.clear'),
+            onClick: () => void clearEntityGraph(),
+          }, clearArmed ? t('explorer.graph.clearConfirm') : t('explorer.graph.clear')),
           entityData !== null && createElement('span', { className: 'meow-explorer-graphbar-label' },
             entityStatus === 'rebuilding'
               ? t('explorer.graph.rebuilding')

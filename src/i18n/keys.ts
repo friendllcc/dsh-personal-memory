@@ -163,6 +163,8 @@ export const UI_KEYS = [
   'explorer.graph.empty',
   'explorer.graph.legend.project',
   'explorer.graph.rebuild',
+  'explorer.graph.clear',
+  'explorer.graph.clearConfirm',
   'explorer.graph.rebuilding',
   'explorer.graph.entityStats',
   'explorer.graph.entityEmpty',

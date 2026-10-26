@@ -730,7 +730,7 @@ export class MemoryDb {
   /** 实体图：节点带来源记忆 id，边带关系类型 / 来源记忆 id。 */
   entityGraph(limit = 500): {
     nodes: Array<{ id: string; name: string; type: string; count: number; rowIds: string[] }>
-    edges: Array<{ source: string; target: string; relation_type: string; weight: number; memoryIds: string[] }>
+    edges: Array<{ source: string; target: string; relation_type: string; weight: number; memoryIds: string[]; origin: 'llm' | 'memory' }>
   } {
     try {
       const rows = this.db
@@ -749,17 +749,64 @@ export class MemoryDb {
         .prepare('SELECT from_entity, to_entity, relation_type, memory_id, weight FROM entity_relations')
         .all() as Array<{ from_entity: string; to_entity: string; relation_type: string; memory_id: string | null; weight: number }>
       const merged = new Map<string, { source: string; target: string; relation_type: string; weight: number; memoryIds: Set<string> }>()
+      // 语义关系（LLM 给的）
+      const pairKey = (a: string, b: string): string => (a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`)
+      const semanticPairs = new Set<string>()
       for (const r of rels) {
         if (!ids.has(r.from_entity) || !ids.has(r.to_entity)) continue
+        semanticPairs.add(pairKey(r.from_entity, r.to_entity))
         const key = `${r.from_entity}\u0000${r.to_entity}\u0000${r.relation_type}`
-        const cur = merged.get(key) ?? { source: r.from_entity, target: r.to_entity, relation_type: r.relation_type, weight: 0, memoryIds: new Set<string>() }
+        const cur = merged.get(key) ?? {
+          source: r.from_entity,
+          target: r.to_entity,
+          relation_type: r.relation_type,
+          weight: 0,
+          memoryIds: new Set<string>(),
+          origin: 'llm' as const,
+        }
         cur.weight += Number(r.weight)
         if (r.memory_id !== null) cur.memoryIds.add(r.memory_id)
         merged.set(key, cur)
       }
+
+      // 兜底：同一记忆里出现过的实体两两连一条「同条记忆」边。
+      // 它**不是语义关系**，只用来避免「新疆/杭州/始祖鸟」这种没有 LLM 关系的孤点。
+      // 已有语义关系的实体对不再重复连。
+      const links = this.db.prepare('SELECT memory_id, entity_id FROM memory_entities').all() as Array<{ memory_id: string; entity_id: string }>
+      const byMemory = new Map<string, string[]>()
+      for (const link of links) {
+        if (!ids.has(link.entity_id)) continue
+        const list = byMemory.get(link.memory_id) ?? []
+        if (!list.includes(link.entity_id)) list.push(link.entity_id)
+        byMemory.set(link.memory_id, list)
+      }
+      const cooc = new Map<string, { source: string; target: string; weight: number; memoryIds: Set<string> }>()
+      for (const [memoryId, list] of byMemory) {
+        const sorted = list.slice().sort()
+        for (let i = 0; i < sorted.length; i++) {
+          for (let j = i + 1; j < sorted.length; j++) {
+            const a = sorted[i]
+            const b = sorted[j]
+            if (semanticPairs.has(pairKey(a, b))) continue
+            const key = `${a}\u0000${b}`
+            const cur = cooc.get(key) ?? { source: a, target: b, weight: 0, memoryIds: new Set<string>() }
+            cur.weight += 1
+            cur.memoryIds.add(memoryId)
+            cooc.set(key, cur)
+          }
+        }
+      }
       return {
         nodes,
-        edges: [...merged.values()].map((e) => ({ ...e, memoryIds: [...e.memoryIds] })),
+        edges: [
+          ...[...merged.values()].map((e) => ({ ...e, memoryIds: [...e.memoryIds] })),
+          ...[...cooc.values()].map((e) => ({
+            ...e,
+            relation_type: 'co_occurrence',
+            memoryIds: [...e.memoryIds],
+            origin: 'memory' as const,
+          })),
+        ],
       }
     } catch {
       return { nodes: [], edges: [] }

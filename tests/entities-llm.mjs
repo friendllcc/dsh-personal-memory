@@ -70,24 +70,41 @@ section('2. 落库 + 关系 + pending')
   const graph = db.entityGraph()
   ok('图节点带来源记忆 id', graph.nodes.every((node) => node.rowIds.includes(row.id)))
   ok('图边带关系类型', graph.edges[0]?.relation_type === 'has_allergy', JSON.stringify(graph.edges))
+  ok('已有语义关系的实体对不再补共现边', graph.edges.length === 1, JSON.stringify(graph.edges.map((e) => e.origin)))
 
-  // 重抽：清掉旧的，换成新实体
   const call2 = async () => JSON.stringify({ entities: [{ name: '海鲜', type: 'item' }], relations: [] })
-  await E.extractMemoryEntities(db, row.id, call2)
-  const graph2 = db.entityGraph()
-  ok('重抽清掉旧链接', graph2.nodes.length === 1 && graph2.nodes[0].name === '海鲜', JSON.stringify(graph2.nodes))
-  ok('重抽清掉旧关系', graph2.edges.length === 0, JSON.stringify(graph2.edges))
 
   // 内容变更 → 抽取失效（否则图谱永远停在旧内容）
   db.update('fact', row.id, { content: '内容改了，实体需要重抽' })
   ok('内容变更后回到 pending', db.entityStats().pending === 1, JSON.stringify(db.entityStats()))
   ok('内容变更后旧实体不再展示', db.entityGraph().nodes.length === 0, JSON.stringify(db.entityGraph().nodes))
 
-  // 删除记忆 → 实体联动清理
+  // 重抽：清掉旧的，换成新实体
   await E.extractMemoryEntities(db, row.id, call2)
+  const graph2 = db.entityGraph()
+  ok('重抽清掉旧链接', graph2.nodes.length === 1 && graph2.nodes[0].name === '海鲜', JSON.stringify(graph2.nodes))
+  ok('重抽清掉旧关系', graph2.edges.length === 0, JSON.stringify(graph2.edges))
+
+  // 删除记忆 → 实体联动清理
   ok('删除前实体存在', db.entityGraph().nodes.length === 1)
   db.remove('fact', row.id)
   ok('删除记忆后实体清空', db.entityGraph().nodes.length === 0, JSON.stringify(db.entityGraph().nodes))
+
+  // 只有实体、没有语义关系 → 补「同条记忆」边，避免孤点
+  const row2 = db.insert({ level: 'fact', content: '新疆 杭州 始祖鸟' })
+  const call3 = async () => JSON.stringify({
+    entities: [
+      { name: '新疆', type: 'location' },
+      { name: '杭州', type: 'location' },
+      { name: '始祖鸟', type: 'organization' },
+    ],
+    relations: [],
+  })
+  await E.extractMemoryEntities(db, row2.id, call3)
+  const g3 = db.entityGraph()
+  const cooc = g3.edges.filter((e) => e.origin === 'memory')
+  ok('无关系实体被同条记忆边连起来', cooc.length === 3, JSON.stringify(g3.edges.map((e) => e.origin)))
+  ok('共现边标记 relation_type=co_occurrence', cooc.every((e) => e.relation_type === 'co_occurrence'))
   db.close()
 }
 
