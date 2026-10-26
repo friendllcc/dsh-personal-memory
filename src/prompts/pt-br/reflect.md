@@ -1,6 +1,8 @@
 Tarefa de reflexão de memória
 Reveja seu histórico de conversa.
 
+Limite de registro: apenas fatos sobre a pessoa; detalhes de implementação (caminhos/configurações/APIs/sistema) não devem ir para user/fact/lesson.
+
 [1] Desde a última [Tarefa de reflexão de memória], ao longo de todos aqueles turnos, há algo novo que valha a pena lembrar entre sessões? Use memory_remember para adicioná-lo.
 1. Projetos já no armazenamento de memória: {projectList}. Você acha que um novo projeto deveria ser adicionado? -> Adicione uma memória para o novo projeto.
 2. Você foi corrigido pelo usuário? Foi elogiado? Caiu em alguma armadilha, e como a resolveu no fim? Guarde isso como memórias lesson.

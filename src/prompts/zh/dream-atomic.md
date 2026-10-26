@@ -21,6 +21,8 @@
 首轮只注入：soul（AI 自身）/ user（用户偏好）/ 全局 rules（importance≥2）。想加入首轮：全局规则类 → 移入 rules 且 importance≥2（project 填"全局"）；用户相关 → 移入 user；AI 自身 → 移入 soul。
 13. memory_project 展示的是 project 层条目（todo 已完成只列最近 5 条）+ 项目特定 rules；上面的检查同样适用（todo 完成标 stale、过时标 archived、project 标签准确）。
 
+14. 有没有「不属于个人助理范畴」的条目？代码/文件路径/配置/工具 API/系统实现细节应移到 project 层（带具体项目名）或标 archived，不要留在全局 user/fact/lesson。
+
 说明：
 重要：务必逐条检查，把过时记忆、误导你的记忆归档，或者修改——两者优先选择归档。
 对于你认为非常重要的记忆，如果不确定事实到底如何，你可以直接翻项目文件来核实。仅对非常重要的记忆使用。

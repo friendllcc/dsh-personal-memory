@@ -1,6 +1,8 @@
 Memory reflection task
 Look back over your chat history.
 
+Record boundary: only facts about the person; engineering implementation details (paths/configs/tool APIs/system internals) must not go into user/fact/lesson.
+
 [1] Since the last [Memory reflection task], across all those turns, is there anything new worth remembering across sessions? Use memory_remember to add it.
 1. Projects already in the memory store: {projectList}. Do you think a new project should be added? -> Add a memory for the new project.
 2. Were you corrected by the user? Were you praised? Did you hit any pitfalls, and how did you solve them in the end? Store these as lesson memories.

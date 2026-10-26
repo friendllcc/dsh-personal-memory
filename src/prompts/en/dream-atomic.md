@@ -21,6 +21,8 @@ Is there anything here you think should be tidied up or updated? If so, update i
 The first turn injects only: soul (the AI itself) / user (the user's preferences) / global rules (importance>=2). To get something into the first turn: a global rule -> move it to rules with importance>=2 (project "global"); something about the user -> move it to user; something about you -> move it to soul.
 13. memory_project shows project-level entries (completed todos, only the 5 most recent) plus project-specific rules; the checks above apply there too (completed todos go stale, out-of-date entries go archived, project labels stay accurate).
 
+14. Any entry that is not personal-assistant material? Code / file paths / configs / tool APIs / system implementation details should be moved to the project level (with a concrete project name) or archived — never left in global user/fact/lesson.
+
 Notes:
 Important: go through them one by one, and archive or fix memories that are out of date or that mislead you — prefer archiving.
 For a memory you consider very important, if you are unsure what the truth is, go read the project's files and check. Only for memories that really matter.

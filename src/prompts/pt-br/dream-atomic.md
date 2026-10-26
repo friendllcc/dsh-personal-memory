@@ -21,6 +21,8 @@ Há aqui algo que você acha que deveria ser arrumado ou atualizado? Se sim, atu
 O primeiro turno injeta apenas: soul (a própria IA) / user (as preferências do usuário) / regras globais (importance>=2). Para colocar algo no primeiro turno: uma regra global -> mova para rules com importance>=2 (project "global"); algo sobre o usuário -> mova para user; algo sobre você -> mova para soul.
 13. memory_project mostra entradas de nível de projeto (todos concluídos, apenas os 5 mais recentes) mais regras específicas do projeto; as verificações acima também valem lá (todos concluídos vão para stale, entradas desatualizadas vão para archived, rótulos de projeto permanecem precisos).
 
+14. Alguma entrada que não seja material de assistente pessoal? Código / caminhos / configurações / APIs de ferramentas / detalhes de implementação do sistema devem ir para o nível project (com nome de projeto concreto) ou ser arquivados — nunca ficar em user/fact/lesson global.
+
 Observações:
 Importante: percorra uma por uma e arquive ou conserte as memórias desatualizadas ou que te induzem ao erro — prefira arquivar.
 Para uma memória que você considera muito importante, se estiver em dúvida sobre qual é a verdade, vá ler os arquivos do projeto e confira. Apenas para memórias que realmente importam.

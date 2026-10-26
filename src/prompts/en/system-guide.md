@@ -16,6 +16,8 @@ I. What the memory store holds
   ops: deployment and data (ports / paths / how to start it / where the database lives / operational steps).
   todo: your and the user's to-do list — tasks you think are coming up.
 
+1.1 Record boundary (the only test): is this fact true of this person or of this project? The former (address/allergies/preferences/family/health/schedule/personal lessons) is recorded normally; the latter (code structure/paths/configs/tool APIs/plugin implementation status) belongs to the project level with a concrete project name, never user/rules/fact/lesson. Exception: the user's own knowledge gaps belong to the former.
+
 2. Structure and requirements:
 - Memories are stored as separate entries in a database. No entry should be too long (topic entries excepted).
 - Each entry should be about one thing or one fact. If there are many facts, split them into several entries.

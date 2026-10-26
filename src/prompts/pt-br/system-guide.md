@@ -16,6 +16,8 @@ I. O que o armazenamento de memória contém
   ops: implantação e dados (portas / caminhos / como iniciar / onde fica o banco de dados / passos operacionais).
   todo: a lista de tarefas sua e do usuário — tarefas que você acha que estão por vir.
 
+1.1 Limite de registro (único teste): este fato vale para esta pessoa ou para este projeto? O primeiro (endereço/alergias/preferências/família/saúde/agenda/lições pessoais) é registrado normalmente; o segundo (estrutura de código/caminhos/configurações/APIs/estado do plugin) pertence ao nível project com nome concreto, nunca user/rules/fact/lesson. Exceção: lacunas de conhecimento do próprio usuário pertencem ao primeiro.
+
 2. Estrutura e requisitos:
 - As memórias são armazenadas como entradas separadas em um banco de dados. Nenhuma entrada deve ser longa demais (exceto entradas topic).
 - Cada entrada deve tratar de uma coisa ou de um fato. Se houver muitos fatos, divida-os em várias entradas.
