@@ -1412,7 +1412,17 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
         if (data !== null) setEntityData(data)
         if (data !== null && data.stats.pending === 0) break
       }
-      await fetchEntities()
+      const final = await fetchEntities()
+      if (final !== null && final.stats.pending > 0) {
+        setFeedback({
+          kind: 'err',
+          text: t('explorer.graph.entityStats', {
+            entities: String(final.stats.entities),
+            relations: String(final.stats.relations),
+            pending: String(final.stats.pending),
+          }),
+        })
+      }
     } catch (e) {
       setFeedback({ kind: 'err', text: e instanceof Error ? e.message : String(e) })
       setEntityStatus('error')
@@ -1762,7 +1772,9 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
           }, '\u21ba'),
         ),
         createElement('div', { className: 'meow-explorer-graphwrap', title: t('explorer.graph.clickHint') },
-          (entityStatus === 'idle' || entityStatus === 'loading') && entityData === null
+          entityStatus === 'rebuilding' && (entityData === null || entityData.stats.entities === 0)
+            ? createElement('div', { className: 'meow-explorer-status' }, t('explorer.graph.rebuilding'))
+            : (entityStatus === 'idle' || entityStatus === 'loading') && entityData === null
             ? createElement('div', { className: 'meow-explorer-status' }, t('explorer.loading'))
             : entityStatus === 'error'
               ? createElement('div', { className: 'meow-explorer-status' }, t('explorer.graph.entityEmpty'))

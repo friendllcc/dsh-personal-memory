@@ -1245,19 +1245,26 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
   // 设置页改动下一轮对话即生效。索引器恒启：关闭时每趟 pass 在 usable() 闸上零成本
   // 空转，开启即自动回填；设置保存路径另补 kick() 即时起步。全部 fail-soft。
   // 实体抽取的 LLM 接线（只在手动重建 / dream 收尾调用，不参与写入路径）。
-  try {
-    const llm = (ctx as unknown as { reflect?: { get?: (n: string, s?: boolean) => unknown } }).reflect?.get?.('llm', false) as LlmLike | undefined
-    const route = resolveDefaultRoute(ctx)
-    if (llm !== undefined && llm !== null && typeof llm.stream === 'function' && route !== null) {
-      entityExtractCallLLM = makeEntityCallLLM(llm, route)
-      ctx.logger.info(`dsh-personal-memory: 实体抽取 LLM 已接线（${route.provider}/${route.model}）`)
-    } else {
-      entityExtractCallLLM = null
-      ctx.logger.warn('dsh-personal-memory: 实体抽取 LLM 未就绪（手动重建会提示不可用）')
+  // 惰性解析：宿主服务（llm / agentDefaultModel）可能晚于本插件就绪，apply 时拿不到
+  // 不代表以后拿不到；每次调用前再试一次，避免「必须重启插件才能用」。
+  // apply 时先清掉上一代 fiber 的接线（热重载后模型可能变了）。
+  entityExtractCallLLM = null
+  const resolveEntityLLM = (): CallLLM | null => {
+    if (entityExtractCallLLM !== null) return entityExtractCallLLM
+    try {
+      const llm = (ctx as unknown as { reflect?: { get?: (n: string, s?: boolean) => unknown } }).reflect?.get?.('llm', false) as LlmLike | undefined
+      const route = resolveDefaultRoute(ctx)
+      if (llm !== undefined && llm !== null && typeof llm.stream === 'function' && route !== null) {
+        entityExtractCallLLM = makeEntityCallLLM(llm, route)
+        ctx.logger.info(`dsh-personal-memory: 实体抽取 LLM 已接线（${route.provider}/${route.model}）`)
+      }
+    } catch (e) {
+      ctx.logger.warn(`dsh-personal-memory: 实体抽取接线失败（${e instanceof Error ? e.message : String(e)}）`)
     }
-  } catch (e) {
-    entityExtractCallLLM = null
-    ctx.logger.warn(`dsh-personal-memory: 实体抽取接线失败（${e instanceof Error ? e.message : String(e)}）`)
+    return entityExtractCallLLM
+  }
+  if (resolveEntityLLM() === null) {
+    ctx.logger.warn('dsh-personal-memory: 实体抽取 LLM 暂未就绪（首次重建时会再试）')
   }
   const semanticRuntime = new SemanticRuntime(resolved.semantic)
   setSemanticRuntime(semanticRuntime)
@@ -1274,10 +1281,11 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
   const signalDreamState = (sessionId: string, state: 'dreaming' | 'dreamed' | 'active'): void => {
     broadcast.broadcast(sessionId, state)
     // dream 收尾 = 记忆刚整理完，顺着抽一遍实体最自然；fire-and-forget，绝不阻塞收尾。
-    if (state === 'dreamed' && entityExtractCallLLM !== null) {
+    const dreamLlm = state === 'dreamed' ? resolveEntityLLM() : null
+    if (dreamLlm !== null) {
       const wsE = windowIndex.get(sessionId)
       if (wsE !== undefined) {
-        const llm = entityExtractCallLLM
+        const llm = dreamLlm
         void extractPendingEntities(getDb(wsE, resolved.projectDir), llm, { limit: 6, logger: ctx.logger })
           .then((r) => {
             if (r.processed > 0) ctx.logger.info(`dsh-personal-memory: dream 收尾抽取实体 ${r.processed} 条记忆 / ${r.entities} 个实体`)
@@ -2008,7 +2016,7 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
               return writeJson(res, 200, {
                 nodes: [], edges: [],
                 stats: { entities: 0, relations: 0, pending: 0 },
-                llmReady: entityExtractCallLLM !== null,
+                llmReady: resolveEntityLLM() !== null,
                 capability: true,
               })
             }
@@ -2017,7 +2025,7 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
             writeJson(res, 200, {
               ...graph,
               stats: db.entityStats(),
-              llmReady: entityExtractCallLLM !== null,
+              llmReady: resolveEntityLLM() !== null,
               capability: true,
             })
           } catch (e) {
@@ -2034,8 +2042,9 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
             const purge = params.get('purge') !== '0'
             const limit = Math.min(Math.max(Number.parseInt(params.get('limit') ?? '500', 10) || 500, 1), 2000)
             const db = getDb('', resolved.projectDir)
-            if (purge) db.clearEntities()
-            if (entityExtractCallLLM === null) {
+            const llm = resolveEntityLLM()
+            if (llm === null) {
+              // 先检查模型再清空：模型不可用时绝不能把已有图谱清掉。
               return writeJson(res, 200, {
                 ok: false,
                 reason: 'llm-unavailable',
@@ -2043,7 +2052,7 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
                 hint: '未拿到默认模型（agentDefaultModel / llm 服务）；请确认宿主模型已配置。',
               })
             }
-            const llm = entityExtractCallLLM
+            if (purge) db.clearEntities()
             // 后台跑：28 条 ≈ 28 次调用，不能让 HTTP 干等；前端轮询 /api/entities。
             void extractPendingEntities(db, llm, { limit, logger: ctx.logger })
               .then((r) => ctx.logger.info(`dsh-personal-memory: 手动重建实体完成（${r.processed} 条记忆 / ${r.entities} 个实体 / 失败 ${r.failed}）`))

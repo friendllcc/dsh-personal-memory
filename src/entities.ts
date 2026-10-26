@@ -71,7 +71,7 @@ Rules:
 - If nothing, return {"entities":[],"relations":[]}.`
 
 function systemPrompt(): string {
-  return getPromptLang().toLowerCase().startsWith('en') ? EN_PROMPT : ZH_PROMPT
+  return getPromptLang().toLowerCase().startsWith('zh') ? ZH_PROMPT : EN_PROMPT
 }
 
 /** 从模型输出里取 JSON（兼容 ```json 包裹、前后废话）。 */
@@ -156,7 +156,7 @@ export async function extractMemoryEntities(
   try {
     text = await callLLM([
       { role: 'system', content: systemPrompt() },
-      { role: 'user', content },
+      { role: 'user', content: [{ type: 'text', text: content }] },
     ])
   } catch (e) {
     logger?.warn?.(`[jt-pa] 实体抽取调用失败：${e instanceof Error ? e.message : String(e)}`)
@@ -191,7 +191,24 @@ export async function extractMemoryEntities(
 }
 
 /** 批量抽「还没抽过」的记忆（dream 收尾 / 手动重建）。 */
+let extracting = false
+
 export async function extractPendingEntities(
+  db: MemoryDb,
+  callLLM: CallLLM,
+  opts: { limit?: number; logger?: { warn?: (m: string) => void } } = {},
+): Promise<{ processed: number; entities: number; failed: number }> {
+  // dream 收尾与手动重建可能同时触发：同一时刻只允许一批，避免重复调用/互相清写。
+  if (extracting) return { processed: 0, entities: 0, failed: 0 }
+  extracting = true
+  try {
+    return await extractPendingEntitiesInner(db, callLLM, opts)
+  } finally {
+    extracting = false
+  }
+}
+
+async function extractPendingEntitiesInner(
   db: MemoryDb,
   callLLM: CallLLM,
   opts: { limit?: number; logger?: { warn?: (m: string) => void } } = {},

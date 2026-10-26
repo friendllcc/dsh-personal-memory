@@ -479,7 +479,22 @@ export class MemoryDb {
       targetId = matches[0].id
     }
     const res = this.db.prepare(`UPDATE ${level} SET ${sets.join(', ')} WHERE id = ?`).run(...args, targetId)
-    return res.changes > 0
+    const changed = res.changes > 0
+    // 内容/标题变了 → 旧实体与关系失效，下轮重建/dream 重抽（状态/关键词变化不触发）。
+    if (changed && (patch.content !== undefined || patch.title !== undefined)) {
+      this.invalidateEntityExtraction(targetId)
+      this.deleteOrphanEntities()
+    }
+    return changed
+  }
+
+  /** 让某条记忆的实体抽取失效（重抽前清掉旧链接/关系/已抽标记）。 */
+  private invalidateEntityExtraction(memoryId: string): void {
+    try {
+      this.db.prepare('DELETE FROM entity_relations WHERE memory_id = ?').run(memoryId)
+      this.db.prepare('DELETE FROM memory_entities WHERE memory_id = ?').run(memoryId)
+      this.db.prepare('DELETE FROM entity_extract_done WHERE memory_id = ?').run(memoryId)
+    } catch { /* 忽略 */ }
   }
 
   /** 删除一条记忆（记忆库面板的用户手动管理入口）。短 id 与 update 同款消歧：
@@ -496,7 +511,11 @@ export class MemoryDb {
       targetId = matches[0].id
     }
     const res = this.db.prepare(`DELETE FROM ${level} WHERE id = ?`).run(targetId)
-    if (res.changes > 0) this.removeEmbedding(level, targetId) // 向量联动清理（v0.4.0）
+    if (res.changes > 0) {
+      this.removeEmbedding(level, targetId) // 向量联动清理（v0.4.0）
+      this.invalidateEntityExtraction(targetId)
+      this.deleteOrphanEntities()
+    }
     return res.changes > 0
   }
 

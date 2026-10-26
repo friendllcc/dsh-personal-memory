@@ -77,6 +77,17 @@ section('2. 落库 + 关系 + pending')
   const graph2 = db.entityGraph()
   ok('重抽清掉旧链接', graph2.nodes.length === 1 && graph2.nodes[0].name === '海鲜', JSON.stringify(graph2.nodes))
   ok('重抽清掉旧关系', graph2.edges.length === 0, JSON.stringify(graph2.edges))
+
+  // 内容变更 → 抽取失效（否则图谱永远停在旧内容）
+  db.update('fact', row.id, { content: '内容改了，实体需要重抽' })
+  ok('内容变更后回到 pending', db.entityStats().pending === 1, JSON.stringify(db.entityStats()))
+  ok('内容变更后旧实体不再展示', db.entityGraph().nodes.length === 0, JSON.stringify(db.entityGraph().nodes))
+
+  // 删除记忆 → 实体联动清理
+  await E.extractMemoryEntities(db, row.id, call2)
+  ok('删除前实体存在', db.entityGraph().nodes.length === 1)
+  db.remove('fact', row.id)
+  ok('删除记忆后实体清空', db.entityGraph().nodes.length === 0, JSON.stringify(db.entityGraph().nodes))
   db.close()
 }
 
