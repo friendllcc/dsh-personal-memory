@@ -436,6 +436,22 @@ button.meow-explorer-legend-item:hover { background: rgba(127,127,127,.14); }
 `
 
 /** fetch JSON（!ok 抛错；路由缺席/宿主旧版本时抛到面板的 error 态）。 */
+/**
+ * 读一个可能为空的响应体。宿主还在跑旧版插件时，路由不存在 → 404 空响应；
+ * 直接 res.json() 会抛 `Unexpected end of JSON input`，这里换成能看懂的错误。
+ */
+async function readJsonResponse<T>(res: Response): Promise<T> {
+  const text = await res.text()
+  if (text.trim() === '') {
+    throw new Error(`HTTP ${res.status} 空响应：宿主可能还在跑旧版插件，请重启 dsh 后重试`)
+  }
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    throw new Error(`HTTP ${res.status} 返回了非 JSON 内容`)
+  }
+}
+
 async function apiFetch<T>(path: string): Promise<T> {
   const response = await fetch(path, { cache: 'no-store' })
   if (!response.ok) {
@@ -1404,7 +1420,7 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
         headers: { 'content-type': 'application/json' },
         body: '{}',
       })
-      const json = (await res.json()) as { ok?: boolean; hint?: string; reason?: string }
+      const json = await readJsonResponse<{ ok?: boolean; hint?: string; reason?: string }>(res)
       if (json.ok === false) {
         setFeedback({ kind: 'err', text: String(json.hint ?? json.reason ?? '实体抽取不可用') })
         setEntityStatus('ready')
@@ -1443,11 +1459,11 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
     setClearArmed(false)
     try {
       const res = await fetch(`${API_BASE}/entities-clear`, { method: 'POST' })
-      const json = (await res.json()) as {
+      const json = await readJsonResponse<{
         ok?: boolean
         error?: string
         stats?: { entities: number; relations: number; pending: number }
-      }
+      }>(res)
       if (json.ok !== true) {
         setFeedback({ kind: 'err', text: json.error ?? '清空失败' })
         return
