@@ -34,7 +34,7 @@ import {
   CATEGORY_COLORS,
   CATEGORY_ORDER,
   categoryLabel,
-  computeGraphLayout,
+  computeStarLayout,
   EXPLORER_LEVELS,
   filterGraphByDepth,
   filterRows,
@@ -51,6 +51,7 @@ import {
   rowsForEdge,
   rowsForNode,
   sortRows,
+  starHierarchy,
   timelineGroups,
   topKeywords,
   type ExplorerRow,
@@ -709,7 +710,10 @@ const INITIAL_VIEW: GraphViewTransform = { k: 1, x: 0, y: 0 }
 function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNodeClick, onNodeDoubleClick, onEdgeClick, onBackgroundDoubleClick }: GraphProps) {
   const width = 760
   const height = 500
-  const layout = useMemo(() => computeGraphLayout(graph, width, height, 240, rootId ?? undefined), [graph, rootId])
+  // 星系布局：我=恒星、人=行星、属性=卫星；没有「我」时 computeStarLayout 内部退回力导向。
+  const star = useMemo(() => starHierarchy(graph, rootId ?? undefined), [graph, rootId])
+  const starRootId = star?.rootId ?? null
+  const layout = useMemo(() => computeStarLayout(graph, width, height, rootId ?? undefined), [graph, rootId])
   const [hoverId, setHoverId] = useState<string | null>(null)
   const [view, setView] = useState<GraphViewTransform>(INITIAL_VIEW)
   /** 手拖过的节点位置覆盖（优先于力导布局结果；子图变化即作废）。 */
@@ -822,6 +826,13 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
     onDoubleClick: onBackgroundDoubleClick,
   },
     createElement('g', { transform: `translate(${view.x},${view.y}) scale(${view.k})` },
+      // 星系轨道（纯装饰，不接事件）：内圈=我的卫星带，外圈=行星轨道
+      star !== null && createElement('g', { key: 'orbits', style: { pointerEvents: 'none' }, opacity: 0.7 },
+        [0.12, 0.21, 0.33].map((f, i) => createElement('circle', {
+          key: i, cx: width / 2, cy: height / 2, r: Math.min(width, height) * f,
+          fill: 'none', stroke: 'rgba(140,170,220,.13)', strokeWidth: 1,
+          strokeDasharray: i === 2 ? '4 9' : '2 10',
+        }))),
       graph.edges.map((edge) => {
         const a = posOf(edge.source)
         const b = posOf(edge.target)
@@ -875,36 +886,79 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
           onMouseLeave: () => setHoverId(null),
           opacity: isDim(node.id) ? 0.2 : 1,
         }
-        if (node.kind === 'me') {
-          // 中心「我」：大实心圆 + 居中标签，视觉锚点（颜色=分类色 me）。
+        if (node.kind === 'me' || node.id === starRootId) {
+          // 恒星「我」：光晕 + 大实心圆 + 居中标签，整张图的视觉锚点。
           return createElement('g', { key: node.id, ...shared },
             createElement('title', null, nodeTip(node)),
+            createElement('circle', { cx: p.x, cy: p.y, r: 34, fill: CATEGORY_COLORS.me, opacity: 0.1 }),
             createElement('circle', {
-              cx: p.x, cy: p.y, r: 19, fill: CATEGORY_COLORS.me,
-              stroke: isSelected ? '#fff' : 'rgba(110,168,254,.55)', strokeWidth: isSelected ? 3 : 1.5,
+              cx: p.x, cy: p.y, r: 26, fill: 'none',
+              stroke: CATEGORY_COLORS.me, strokeWidth: 1, opacity: 0.35,
+            }),
+            createElement('circle', {
+              cx: p.x, cy: p.y, r: 22, fill: CATEGORY_COLORS.me,
+              stroke: isSelected ? '#fff' : 'rgba(110,168,254,.65)', strokeWidth: isSelected ? 3 : 1.5,
             }),
             createElement('text', {
-              x: p.x, y: p.y + 4,
-              style: { fill: '#10131a', fontSize: '12px', fontWeight: 700, textAnchor: 'middle', stroke: 'none' },
+              x: p.x, y: p.y + 4.5,
+              style: { fill: '#10131a', fontSize: '13px', fontWeight: 700, textAnchor: 'middle', stroke: 'none' },
             }, node.label),
           )
         }
-        // 模型抽出的「我」画大一点，作为视觉参照点（只是显示，不是前端合成节点）
-        const radius = node.kind === 'entity' && (node.label === '我' || node.label === 'Me')
-          ? 12
-          : 6 + Math.min(11, Math.log2(node.count + 1) * 2.4)
+        const isPerson = node.kind === 'entity' && node.entityType === 'person'
+        // 行星比卫星大；卫星再按提及次数微调（层级一眼可见）
+        const radius = isPerson
+          ? 10 + Math.min(5, Math.log2(node.count + 1) * 1.5)
+          : node.kind === 'entity'
+            ? 4.5 + Math.min(4, Math.log2(node.count + 1) * 1.2)
+            : 6 + Math.min(11, Math.log2(node.count + 1) * 2.4)
         const color = CATEGORY_COLORS[cat]
-        const labelOffset = node.kind === 'project' ? radius + 10 : radius + 6
-        // 标签降噪：低频关键词默认藏标签，悬停/选中及其邻居时浮现
-        // 标签全显（用户反馈「有的实体不显示名字」）；长名字截断，完整名在 tooltip/抽屉里
-        const showLabel = true
-        const shownLabel = node.label.length > 10 ? `${node.label.slice(0, 10)}…` : node.label
+        const shownLabel = node.label.length > (isPerson ? 10 : 8)
+          ? `${node.label.slice(0, isPerson ? 10 : 8)}…`
+          : node.label
+        // 卫星标签沿「父节点 → 自己」方向朝外排，避免和内圈挤在一起；行星/外圈保持水平
+        const parentId = star?.parentOf.get(node.id)
+        const parentPos = parentId === undefined ? undefined : posOf(parentId)
+        let label: ReturnType<typeof createElement> | null = null
+        if (parentPos !== undefined) {
+          const angle = Math.atan2(p.y - parentPos.y, p.x - parentPos.x)
+          const tx = p.x + Math.cos(angle) * (radius + 5)
+          const ty = p.y + Math.sin(angle) * (radius + 5)
+          let deg = (angle * 180) / Math.PI
+          let anchor = 'start'
+          // 左半圈旋转 180° 并用 end 锚点，保证文字始终朝外、不倒着读
+          if (deg > 90 || deg < -90) { deg += 180; anchor = 'end' }
+          label = createElement('text', {
+            x: tx, y: ty,
+            transform: `rotate(${deg} ${tx} ${ty})`,
+            textAnchor: anchor,
+            dominantBaseline: 'middle',
+            style: {
+              fontSize: isPerson ? '11px' : '9px',
+              fontWeight: isPerson ? 600 : 400,
+              fill: isPerson ? '#e8eefc' : 'rgba(225,232,245,.88)',
+            },
+          }, shownLabel)
+        } else {
+          label = createElement('text', {
+            x: p.x + radius + (isPerson ? 8 : 6), y: p.y + 3.5,
+            style: {
+              fontSize: isPerson ? '11px' : '9px',
+              fontWeight: isPerson ? 600 : 400,
+              fill: isPerson ? '#e8eefc' : 'rgba(225,232,245,.88)',
+            },
+          }, shownLabel)
+        }
         return createElement('g', { key: node.id, ...shared },
           createElement('title', null, nodeTip(node)),
           // 聚焦根节点的外圈描边提示（双击重聚焦的视觉锚）
           isRoot && createElement('circle', {
             cx: p.x, cy: p.y, r: radius + 5, fill: 'none',
             stroke: 'rgba(110,168,254,.6)', strokeWidth: 1.2, strokeDasharray: '3 3',
+          }),
+          isPerson && createElement('circle', {
+            cx: p.x, cy: p.y, r: radius + 4, fill: 'none',
+            stroke: color, strokeWidth: 1, opacity: 0.28,
           }),
           node.kind === 'project'
             ? createElement('rect', {
@@ -916,7 +970,7 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
               cx: p.x, cy: p.y, r: radius, fill: color, fillOpacity: .85,
               stroke: isSelected ? '#fff' : color, strokeWidth: isSelected ? 2.5 : 1,
             }),
-          showLabel && createElement('text', { x: p.x + labelOffset, y: p.y + 3.5 }, shownLabel),
+          label,
         )
       }),
     ),

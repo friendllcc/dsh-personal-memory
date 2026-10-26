@@ -847,6 +847,181 @@ export function computeGraphLayout(
   return pos
 }
 
+
+// ── 星系布局：我=恒星，人=行星，属性=卫星 ─────────────────────────────────────
+
+function isPersonNode(node: GraphNode): boolean {
+  return node.kind === 'entity' && node.entityType === 'person'
+}
+
+export interface StarHierarchy {
+  rootId: string
+  /** 行星：除根以外的人。 */
+  planets: GraphNode[]
+  /** 行星的卫星（按行星 id 分组）。 */
+  moonsOf: Map<string, GraphNode[]>
+  /** 直接挂在恒星上的卫星（本人的属性/事件等）。 */
+  meMoons: GraphNode[]
+  /** 既连不到人、也连不到恒星的点（兜底外圈）。 */
+  outer: GraphNode[]
+  /** 卫星 → 父节点（行星或恒星）；行星本身不在表里。 */
+  parentOf: Map<string, string>
+}
+
+/**
+ * 把实体图拆成「恒星 / 行星 / 卫星」两层：
+ * - 根：显式 rootId，否则自动找规范实体「我 / Me」；
+ * - 行星：其余 person 实体（按与根的边权排序）；
+ * - 卫星：非 person 实体，优先挂到边权最大的人，其次挂到根，都没有则进外圈。
+ * 只读图结构，不改数据；没有「我」时返回 null，调用方退回力导向。
+ */
+export function starHierarchy(graph: MemoryGraph, rootId?: string): StarHierarchy | null {
+  const root = (rootId === undefined ? undefined : graph.nodes.find((n) => n.id === rootId))
+    ?? graph.nodes.find((n) => n.kind === 'entity' && (n.label === '我' || n.label === 'Me'))
+    ?? graph.nodes.find((n) => n.kind === 'me')
+  if (root === undefined) return null
+
+  const keyOf = (a: string, b: string): string => (a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`)
+  const pairWeight = new Map<string, number>()
+  for (const e of graph.edges) {
+    const k = keyOf(e.source, e.target)
+    pairWeight.set(k, Math.max(pairWeight.get(k) ?? 0, e.weight))
+  }
+  const weight = (a: string, b: string): number => pairWeight.get(keyOf(a, b)) ?? 0
+
+  const nbrs = new Map<string, Array<{ id: string; weight: number }>>()
+  for (const [k, w] of pairWeight) {
+    const [a, b] = k.split('\u0000')
+    if (a === undefined || b === undefined) continue
+    if (!nbrs.has(a)) nbrs.set(a, [])
+    if (!nbrs.has(b)) nbrs.set(b, [])
+    nbrs.get(a)!.push({ id: b, weight: w })
+    nbrs.get(b)!.push({ id: a, weight: w })
+  }
+
+  const byLabel = (a: GraphNode, b: GraphNode): number => (a.label < b.label ? -1 : a.label > b.label ? 1 : 0)
+  const planets = graph.nodes
+    .filter((n) => n.id !== root.id && isPersonNode(n))
+    .sort((a, b) => weight(b.id, root.id) - weight(a.id, root.id) || byLabel(a, b))
+  const personIds = new Set(planets.map((p) => p.id))
+  const moonsOf = new Map<string, GraphNode[]>()
+  for (const p of planets) moonsOf.set(p.id, [])
+
+  const meMoons: GraphNode[] = []
+  const outer: GraphNode[] = []
+  const parentOf = new Map<string, string>()
+  for (const node of graph.nodes) {
+    if (node.id === root.id || personIds.has(node.id)) continue
+    const candidates = (nbrs.get(node.id) ?? [])
+      .filter((x) => personIds.has(x.id))
+      .sort((a, b) => b.weight - a.weight)
+    if (candidates.length > 0) {
+      const parent = candidates[0].id
+      moonsOf.get(parent)!.push(node)
+      parentOf.set(node.id, parent)
+    } else if (weight(node.id, root.id) > 0) {
+      meMoons.push(node)
+      parentOf.set(node.id, root.id)
+    } else {
+      outer.push(node)
+    }
+  }
+  meMoons.sort((a, b) => weight(b.id, root.id) - weight(a.id, root.id) || byLabel(a, b))
+  outer.sort(byLabel)
+  for (const list of moonsOf.values()) list.sort(byLabel)
+
+  return { rootId: root.id, planets, moonsOf, meMoons, outer, parentOf }
+}
+
+/**
+ * 星系布局（确定性）：恒星钉在画布中心，行星沿外圈，行星的卫星绕行星，
+ * 恒星自己的卫星用黄金角螺旋铺在内圈（避免挤在一条圆环上）。
+ * 没有「我」时退回 computeGraphLayout（力导向）。
+ */
+export function computeStarLayout(
+  graph: MemoryGraph,
+  width = 760,
+  height = 500,
+  rootId?: string,
+): Map<string, GraphPoint> {
+  const hierarchy = starHierarchy(graph, rootId)
+  if (hierarchy === null) return computeGraphLayout(graph, width, height, 240, rootId)
+
+  const pos = new Map<string, GraphPoint>()
+  const { nodes } = graph
+  if (nodes.length === 0) return pos
+  const cx = width / 2
+  const cy = height / 2
+  const minDim = Math.min(width, height)
+  pos.set(hierarchy.rootId, { x: cx, y: cy })
+
+  const planetCount = hierarchy.planets.length
+  const moonRing = (m: number): number => (m <= 0 ? 0 : Math.min(46, 24 + Math.sqrt(m) * 7))
+  const maxMoons = Math.max(0, ...hierarchy.planets.map((p) => hierarchy.moonsOf.get(p.id)?.length ?? 0))
+  const maxMoonR = moonRing(maxMoons)
+  // 行星之间要放得下各自的卫星圆：按最挤的情况把轨道半径撑开（上限 0.40 × 短边）
+  const needed = planetCount > 1 ? (planetCount * (2 * maxMoonR + 16)) / (2 * Math.PI) : 0
+  const planetR = Math.min(minDim * 0.40, Math.max(minDim * 0.33, needed))
+
+  // 行星
+  const planetAngle = new Map<string, number>()
+  hierarchy.planets.forEach((p, i) => {
+    const a = -Math.PI / 2 + (2 * Math.PI * i) / Math.max(1, planetCount)
+    const m = hierarchy.moonsOf.get(p.id)?.length ?? 0
+    const r = planetR + Math.min(14, Math.max(0, m - 5) * 3)
+    planetAngle.set(p.id, a)
+    pos.set(p.id, { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) })
+  })
+
+  // 行星的卫星：≤8 颗一圈，>8 颗分内外两圈
+  hierarchy.planets.forEach((p, i) => {
+    const list = hierarchy.moonsOf.get(p.id) ?? []
+    const pp = pos.get(p.id)
+    if (pp === undefined || list.length === 0) return
+    const phase = -Math.PI / 2 + i * 0.9
+    const placeRing = (items: GraphNode[], radius: number): void => {
+      items.forEach((node, j) => {
+        const a = phase + (2 * Math.PI * j) / Math.max(1, items.length)
+        pos.set(node.id, { x: pp.x + radius * Math.cos(a), y: pp.y + radius * Math.sin(a) })
+      })
+    }
+    if (list.length <= 8) {
+      placeRing(list, moonRing(list.length))
+    } else {
+      placeRing(list.slice(0, 6), 30)
+      placeRing(list.slice(6), 46)
+    }
+  })
+
+  // 恒星的卫星：黄金角螺旋，铺在 0.12–0.21 × 短边的内圈
+  const nMe = hierarchy.meMoons.length
+  const rMin = minDim * 0.12
+  const rMax = minDim * 0.21
+  const golden = Math.PI * (3 - Math.sqrt(5))
+  hierarchy.meMoons.forEach((node, i) => {
+    const t = (i + 0.5) / Math.max(1, nMe)
+    const r = rMin + (rMax - rMin) * Math.sqrt(t)
+    const a = i * golden + 0.45
+    pos.set(node.id, { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) })
+  })
+
+  // 兜底外圈：既连不到人、也连不到恒星的点
+  const outerR = Math.min(minDim * 0.44, minDim / 2 - 30)
+  hierarchy.outer.forEach((node, i) => {
+    const a = -Math.PI / 2 + (2 * Math.PI * i) / Math.max(1, hierarchy.outer.length)
+    pos.set(node.id, { x: cx + outerR * Math.cos(a), y: cy + outerR * Math.sin(a) })
+  })
+
+  // 夹紧到画布（恒星不夹，永远在中心）
+  const pad = 20
+  for (const [id, p] of pos) {
+    if (id === hierarchy.rootId) continue
+    p.x = Math.min(Math.max(p.x, pad), width - pad)
+    p.y = Math.min(Math.max(p.y, pad), height - pad)
+  }
+  return pos
+}
+
 // ── 卡片视图：过滤 / 摘要 / 相对时间 ─────────────────────────────────────────
 
 /** 项目筛选的特殊键（选项列表里 'all' 之外的两个哨兵）。 */

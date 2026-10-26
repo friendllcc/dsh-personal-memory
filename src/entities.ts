@@ -53,6 +53,7 @@ const ZH_PROMPT = `你是个人记忆的实体抽取器。从一条记忆里抽�
 - 如果这条记忆讲的是**代码、文件格式、配置、工具/API 实现、会话文件、调试过程、插件/系统内部机制**，它不属于个人生活知识：直接返回 {"entities":[],"relations":[]}。
 - 同一事物的不同写法合并成一个规范名（例如 妻子/太太→老婆，协和→协和医院，健康检查→体检）。
 - 关系方向：from 是主体，to 是客体；不确定就用 related_to。
+- 关系尽量落到具体的人：某个人的属性/事件/物品（老婆的生日、老大的学校、老二的大熊猫之旅）用那个人做 from；只有本人自己的属性/事件才用「我」。
 - 中文名称原样输出，不翻译、不罗马化。
 - 没有实体就返回 {"entities":[],"relations":[]}。`
 
@@ -71,6 +72,7 @@ Rules:
 - If the memory is about code, file formats, configs, tool/API internals, session files, debugging, or plugin/system internals, it is NOT personal-life knowledge: return {"entities":[],"relations":[]}.
 - Merge obvious variants of the same thing into one canonical name (wife/spouse -> wife, 协和 -> 协和医院).
 - Relations: from is the subject, to is the object; use related_to when unsure.
+- Attach relations to the specific person when possible: a person's attribute/event/item (wife's birthday, eldest's school, second child's panda trip) should use that person as "from"; only the owner's own attributes/events use "我".
 - Keep original language; do not translate.
 - If nothing, return {"entities":[],"relations":[]}.`
 
