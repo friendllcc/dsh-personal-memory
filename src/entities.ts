@@ -48,7 +48,8 @@ const ZH_PROMPT = `你是个人记忆的实体抽取器。从一条记忆里抽�
 
 规则：
 - 只抽具体的人、地点、机构、物品、事件、健康状况、长期偏好/红线。
-- 不要抽：代码符号、文件路径、配置键、工具/API 名、日期时间、动作短语、泛称（我/用户/公司/医生/其他品牌/平台客服）。
+- 当记忆描述主人自己（“我/我的…”）时，用规范名「我」作为一个 type=person 的实体，并与相关实体建立关系；不要用「用户」「本人」等其他写法。
+- 不要抽：代码符号、文件路径、配置键、工具/API 名、日期时间、动作短语、泛称（用户/公司/医生/其他品牌/平台客服）。
 - 同一事物的不同写法合并成一个规范名（例如 妻子/太太→老婆，协和→协和医院，健康检查→体检）。
 - 关系方向：from 是主体，to 是客体；不确定就用 related_to。
 - 中文名称原样输出，不翻译、不罗马化。
@@ -64,7 +65,8 @@ Return strict JSON only (no markdown, no explanation):
 
 Rules:
 - Only concrete people, places, organizations, items, events, health conditions, long-term preferences/red lines.
-- Do NOT extract code identifiers, file paths, config keys, tool/API names, dates, times, verb phrases, or generic references (I/me/user/company/doctor/other brands).
+- When the memory is about the owner themselves ("I / my ..."), use the canonical entity "我" (or "Me" for English text) with type=person, and relate it to the other entities. Do NOT use "the user" / "the owner".
+- Do NOT extract code identifiers, file paths, config keys, tool/API names, dates, times, verb phrases, or generic references (the user/company/doctor/other brands).
 - Merge obvious variants of the same thing into one canonical name (wife/spouse -> wife, 协和 -> 协和医院).
 - Relations: from is the subject, to is the object; use related_to when unsure.
 - Keep original language; do not translate.

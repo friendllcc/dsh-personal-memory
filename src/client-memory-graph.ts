@@ -429,6 +429,9 @@ export function nodeCategory(node: Pick<GraphNode, 'kind' | 'levels'> & { label?
   if (node.kind === 'project') return 'project'
   if (node.kind === 'entity') {
     const t = (node as { entityType?: string }).entityType
+    // 「我」由模型抽出（规范名 我 / Me），显示时归到 me 分类（蓝色、图例恒显），
+    // 但它仍然是数据库里的普通实体，不是前端合成的节点。
+    if (t === 'person' && (node.label === '我' || node.label === 'Me')) return 'me'
     if (t === 'person' || t === 'health' || t === 'event' || t === 'location' || t === 'organization' || t === 'item') return t
     if (t === 'project') return 'project'
     return 'thing'

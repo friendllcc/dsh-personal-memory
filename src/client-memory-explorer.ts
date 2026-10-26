@@ -873,7 +873,10 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
             }, node.label),
           )
         }
-        const radius = 6 + Math.min(11, Math.log2(node.count + 1) * 2.4)
+        // 模型抽出的「我」画大一点，作为视觉参照点（只是显示，不是前端合成节点）
+        const radius = node.kind === 'entity' && (node.label === '我' || node.label === 'Me')
+          ? 12
+          : 6 + Math.min(11, Math.log2(node.count + 1) * 2.4)
         const color = CATEGORY_COLORS[cat]
         const labelOffset = node.kind === 'project' ? radius + 10 : radius + 6
         // 标签降噪：低频关键词默认藏标签，悬停/选中及其邻居时浮现
@@ -1274,7 +1277,7 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
   const [entityStatus, setEntityStatus] = useState<'idle' | 'loading' | 'ready' | 'error' | 'rebuilding'>('idle')
   const [clearArmed, setClearArmed] = useState(false)
   // 语言切换时强制重渲染（onUiLocaleChange 注册即回调一次，卸载即退订）
-  const [, setLocaleTick] = useState(0)
+  const [localeTick, setLocaleTick] = useState(0)
   const seqRef = useRef(0)
   const allSeqRef = useRef(0)
   const feedbackSeqRef = useRef(0)
@@ -1469,25 +1472,29 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
   // 实体表 → 图管线（GraphView 只认 nodes/edges）
   const fullGraph = useMemo(() => {
     const data = entityData
-    if (data === null) return { nodes: [], edges: [] }
-    return {
-      nodes: data.nodes.map((n) => ({
-        id: `ent:${n.id}`,
-        label: n.name,
-        kind: 'entity' as const,
-        count: n.count,
-        levels: {},
-        entityType: n.type,
-        rowIds: n.rowIds,
-      })),
-      edges: data.edges.map((e) => ({
-        source: `ent:${e.source}`,
-        target: `ent:${e.target}`,
-        weight: e.weight,
-        kind: (e.origin === 'memory' ? 'cooc' : 'relation') as 'cooc' | 'relation',
-        relation_type: e.relation_type,
-      })),
-    }
+    if (data === null || data.nodes.length === 0) return { nodes: [], edges: [] }
+
+    const toNode = (n: EntityPayload['nodes'][number]) => ({
+      id: `ent:${n.id}`,
+      label: n.name,
+      kind: 'entity' as const,
+      count: n.count,
+      levels: {},
+      entityType: n.type,
+      rowIds: n.rowIds,
+    })
+    const nodes: GraphNode[] = data.nodes.map(toNode)
+    const edges: GraphEdge[] = data.edges.map((e) => ({
+      source: `ent:${e.source}`,
+      target: `ent:${e.target}`,
+      weight: e.weight,
+      kind: (e.origin === 'memory' ? 'cooc' : 'relation') as 'cooc' | 'relation',
+      relation_type: e.relation_type,
+    }))
+
+    // 「我」由 LLM 在抽取时作为规范实体给出（提示词要求），前端不再合成。
+    // 没有任何语义关系的实体由 db 层的「同条记忆」边兜底连接。
+    return { nodes, edges }
   }, [entityData])
 
   const graph = useMemo(() => {
@@ -1848,15 +1855,19 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
                   }),
         ),
         createElement('div', { className: 'meow-explorer-legend' },
-          ...legendCats.map((cat) => createElement('button', {
-            key: cat,
-            className: 'meow-explorer-legend-item',
-            'data-off': hiddenCats.has(cat) ? 'true' : 'false',
-            title: categoryLabel(cat),
-            onClick: () => toggleCat(cat),
-          },
-            createElement('span', { className: 'meow-explorer-chip-dot', style: { background: CATEGORY_COLORS[cat] } }),
-            createElement('span', { className: 'meow-explorer-legend-text' }, categoryLabel(cat)))),
+          ...legendCats.map((cat) => cat === 'me'
+            ? createElement('span', { key: cat, className: 'meow-explorer-legend-item' },
+                createElement('span', { className: 'meow-explorer-chip-dot', style: { background: CATEGORY_COLORS[cat] } }),
+                createElement('span', { className: 'meow-explorer-legend-text' }, categoryLabel(cat)))
+            : createElement('button', {
+                key: cat,
+                className: 'meow-explorer-legend-item',
+                'data-off': hiddenCats.has(cat) ? 'true' : 'false',
+                title: categoryLabel(cat),
+                onClick: () => toggleCat(cat),
+              },
+                createElement('span', { className: 'meow-explorer-chip-dot', style: { background: CATEGORY_COLORS[cat] } }),
+                createElement('span', { className: 'meow-explorer-legend-text' }, categoryLabel(cat)))),
           createElement('span', { style: { opacity: .55 } }, t('explorer.graph.clickHint')),
         ),
       ),
