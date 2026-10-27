@@ -296,7 +296,7 @@ export const CATEGORY_COLORS: Record<GraphCategory, string> = {
   organization: '#0ea5e9', // 天蓝：机构
   item: '#a855f7', // 紫：物品
   project: '#14b8a6', // 青绿：项目
-  thing: '#8fa9d6', // 浅蓝：概念/其他（与人物卫星的银灰区分）
+  thing: '#b3a1e6', // 浅紫：概念/其他（与蓝/青区分）
   experience: '#f472b6', // 粉：经验·原则
   self: '#64748b', // 深灰蓝：AI 自身
 }
@@ -778,9 +778,34 @@ export function computeGraphLayout(
     mine: { spring: 0.06, lenScale: 1.0 },
     project: { spring: 0.09, lenScale: 0.85 },
     cooc: { spring: 0.045, lenScale: 1.25 },
+    relation: { spring: 0.07, lenScale: 0.9 },
+  }
+  const nodeById = new Map(nodes.map((n) => [n.id, n]))
+  const isPerson = (id: string): boolean => {
+    const n = nodeById.get(id)
+    return n?.kind === 'entity' && n.entityType === 'person'
   }
   const edgeList = edges.map((e) => {
-    const mech = EDGE_MECHANICS[e.kind] ?? EDGE_MECHANICS.cooc
+    let mech = EDGE_MECHANICS[e.kind] ?? EDGE_MECHANICS.cooc
+    if (e.kind === 'relation') {
+      const aRoot = e.source === pinToCenter
+      const bRoot = e.target === pinToCenter
+      const aPerson = isPerson(e.source)
+      const bPerson = isPerson(e.target)
+      if ((aRoot && bPerson) || (bRoot && aPerson)) {
+        // 我 → 人物：主枝，保持中等长度
+        mech = { spring: 0.09, lenScale: 0.9 }
+      } else if (aRoot || bRoot) {
+        // 我 → 属性：弱而长，让属性漂向人物/同类，而不是全挂在中心
+        mech = { spring: 0.022, lenScale: 1.5 }
+      } else if (aPerson || bPerson) {
+        // 人物 → 自己的属性：短而紧，形成人物小团
+        mech = { spring: 0.16, lenScale: 0.48 }
+      } else {
+        // 属性 ↔ 属性：中等
+        mech = { spring: 0.075, lenScale: 0.78 }
+      }
+    }
     return { ...e, len: Math.max(46, 108 - 12 * (e.weight - 1)) * mech.lenScale, spring: mech.spring }
   })
   const pad = 26

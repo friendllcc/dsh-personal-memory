@@ -35,7 +35,6 @@ import {
   CATEGORY_ORDER,
   categoryLabel,
   computeGraphLayout,
-  starConstellation,
   EXPLORER_LEVELS,
   filterGraphByDepth,
   filterRows,
@@ -712,11 +711,10 @@ const INITIAL_VIEW: GraphViewTransform = { k: 1, x: 0, y: 0 }
 function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNodeClick, onNodeDoubleClick, onEdgeClick, onBackgroundDoubleClick, showAllLabels }: GraphProps) {
   const width = 760
   const height = 500
-  // 星座簇布局：每个人/每组属性各成一簇；没有「我」时退回力导向。
-  const constellation = useMemo(() => starConstellation(graph, width, height, rootId ?? undefined), [graph, rootId])
-  const star = constellation?.hierarchy ?? null
-  const starRootId = star?.rootId ?? null
-  const layout = useMemo(() => constellation?.positions ?? computeGraphLayout(graph, width, height, 240, rootId ?? undefined), [constellation, graph, rootId])
+  // 经典力导向：优先钉住聚焦节点，否则自动钉住规范实体「我」
+  const meId = graph.nodes.find((n) => n.kind === 'me' || (n.kind === 'entity' && (n.label === '我' || n.label === 'Me')))?.id ?? null
+  const pinId = rootId ?? meId
+  const layout = useMemo(() => computeGraphLayout(graph, width, height, 320, pinId ?? undefined), [graph, pinId])
   const [hoverId, setHoverId] = useState<string | null>(null)
   const [view, setView] = useState<GraphViewTransform>(INITIAL_VIEW)
   /** 手拖过的节点位置覆盖（优先于力导布局结果；子图变化即作废）。 */
@@ -730,7 +728,7 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
   if (graph.nodes.length === 0) {
     return createElement('div', { className: 'meow-explorer-status' }, t('explorer.graph.empty'))
   }
-  const posOf = (id: string): { x: number; y: number } | undefined => overrides.get(id) ?? layout.get(id)
+  const posOf = (id: string): { x: number; y: number } | undefined => overrides.get(id) ?? isolatedPos.get(id) ?? layout.get(id)
   /** 屏幕坐标 → SVG 用户坐标（按实际渲染尺寸换算；viewBox 与 CSS 尺寸未必一致）。 */
   const toSvgPoint = (clientX: number, clientY: number): { x: number; y: number } => {
     const rect = svgRef.current?.getBoundingClientRect()
@@ -819,18 +817,23 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
   const edgeWidth = (weight: number): number => 1 + Math.min(3, (weight - 1) * 0.5)
   const labelsById = new Map(graph.nodes.map((n) => [n.id, n.label]))
   const nodeById = new Map(graph.nodes.map((n) => [n.id, n]))
-  /** 节点半径：我 30 > 人物 18–20 > 属性 5–6.5（边线按这个缩短，避免穿过节点）。 */
-  const nodeRadius = (node: GraphNode): number => {
-    if (node.kind === 'me' || node.id === starRootId) return 30
-    if (constellation?.clusterOf.get(node.id)?.id === 'type:__unlinked__') return 7
-    if (node.kind === 'entity' && node.entityType === 'person') {
-      return 18 + Math.min(2, Math.log2(node.count + 1))
-    }
-    if (node.kind === 'entity') {
-      return 5 + Math.min(1.5, Math.log2(node.count + 1) * 0.5)
-    }
-    return 6 + Math.min(11, Math.log2(node.count + 1) * 2.4)
+  const degreeById = new Map<string, number>()
+  for (const e of graph.edges) {
+    degreeById.set(e.source, (degreeById.get(e.source) ?? 0) + 1)
+    degreeById.set(e.target, (degreeById.get(e.target) ?? 0) + 1)
   }
+  const isolatedPos = new Map<string, { x: number; y: number }>()
+  graph.nodes.filter((n) => (degreeById.get(n.id) ?? 0) === 0 && n.id !== pinId).forEach((n, i) => {
+    isolatedPos.set(n.id, { x: 34, y: height - 34 - i * 24 })
+  })
+  // 默认只显示「我/人物/度数最高的 18 个实体」的名字；其余 hover 或点「标签」全显
+  const topLabelIds = new Set(
+    [...graph.nodes]
+      .filter((n) => n.id !== pinId && !(n.kind === 'entity' && n.entityType === 'person'))
+      .sort((a, b) => (degreeById.get(b.id) ?? 0) - (degreeById.get(a.id) ?? 0) || b.count - a.count)
+      .slice(0, 18)
+      .map((n) => n.id),
+  )
   return createElement('svg', {
     ref: svgRef,
     className: 'meow-explorer-graph',
@@ -842,26 +845,6 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
     onDoubleClick: onBackgroundDoubleClick,
   },
     createElement('g', { transform: `translate(${view.x},${view.y}) scale(${view.k})` },
-      // 簇的「引力圈」：细线、低透明、不填充，避免上一版色块像墨渍
-      constellation?.clusters.filter((c) => c.kind === 'person').map((c) => createElement('circle', {
-        key: `halo:${c.id}`,
-        cx: c.center.x, cy: c.center.y, r: c.bounds + (c.nodes.length <= 1 ? 6 : 10),
-        fill: 'none',
-        stroke: 'rgba(205,215,230,.22)',
-        strokeWidth: 1.4,
-        strokeDasharray: c.kind === 'person' ? undefined : '3 7',
-        opacity: 0.28,
-        style: { pointerEvents: 'none' },
-      })),
-      constellation?.clusters.filter((c) => c.kind === 'person').map((c) => createElement('circle', {
-        key: `halo2:${c.id}`,
-        cx: c.center.x, cy: c.center.y, r: c.bounds + (c.nodes.length <= 1 ? 9 : 15),
-        fill: 'none',
-        stroke: 'rgba(205,215,230,.06)',
-        strokeWidth: 2,
-        opacity: 0.07,
-        style: { pointerEvents: 'none' },
-      })),
       graph.edges.map((edge) => {
         const a = posOf(edge.source)
         const b = posOf(edge.target)
@@ -869,51 +852,25 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
         const touched = focusId !== null && (edge.source === focusId || edge.target === focusId)
         const edgeSelected = selectedEdge !== null && sameEdge(selectedEdge, edge)
         const lit = touched || edgeSelected
-        // 默认只画「我→人物」「人物→自己的卫星」「同簇内部」这三类边；
-        // 我→类型簇的 30 条辐射线、跨簇长线默认隐藏（hover/选中时再出现），避免蛛网。
-        const rootEdge = starRootId !== null && (edge.source === starRootId || edge.target === starRootId)
-        // 只保留「我→人物本人」的边；「我→人物的卫星」不算（否则每个卫星都有一条线，形成线束）
-        const otherId = starRootId !== null && edge.source === starRootId ? edge.target : edge.source
-        const otherNode = nodeById.get(otherId)
-        const primary = rootEdge && otherNode?.kind === 'entity' && otherNode.entityType === 'person'
-        const edgeOpacity = primary
-          ? (focusId === null ? 0.36 : lit ? 0.9 : 0.06)
-          : (lit ? 0.55 : 0)
+        // 默认只画语义边，并隐藏「我→属性」的 44 条辐射线；悬停/选中时再展开。
+        const baseVisible = edge.kind !== 'cooc'
+        const edgeOpacity = focusId === null
+          ? (baseVisible ? 0.09 : 0)
+          : lit ? 0.85 : (baseVisible ? 0.04 : 0)
         const tip = `${labelsById.get(edge.source) ?? edge.source} ↔ ${labelsById.get(edge.target) ?? edge.target} · ${edgeKindLabel(edge.kind, edge.relation_type)} · ${edge.weight}`
-        // 轻微弧线 + 从节点边缘出发：线不穿过「我」和簇内节点
-        const len = Math.hypot(b.x - a.x, b.y - a.y) || 1
-        const na = nodeById.get(edge.source)
-        const nb = nodeById.get(edge.target)
-        const ra = na === undefined ? 0 : nodeRadius(na) + 2
-        const rb = nb === undefined ? 0 : nodeRadius(nb) + 2
-        const ux = (b.x - a.x) / len
-        const uy = (b.y - a.y) / len
-        const ax = a.x + ux * ra
-        const ay = a.y + uy * ra
-        const bx = b.x - ux * rb
-        const by = b.y - uy * rb
-        const bend = primary ? 0 : len * 0.12
-        const mx = (ax + bx) / 2 + uy * bend
-        const my = (ay + by) / 2 - ux * bend
-        const d = `M ${ax.toFixed(2)} ${ay.toFixed(2)} Q ${mx.toFixed(2)} ${my.toFixed(2)} ${bx.toFixed(2)} ${by.toFixed(2)}`
         return createElement('g', { key: `${edge.source}->${edge.target}`, className: 'meow-explorer-gedge' },
           // 可视细线（不接管事件；热区线负责交互，CSS hover 提亮这条）
-          createElement('path', {
+          createElement('line', {
             className: 'meow-explorer-gedge-line',
-            d,
-            fill: 'none',
-            stroke: lit ? 'rgba(130,185,255,.95)' : primary ? 'rgba(125,175,235,.55)' : EDGE_COLORS[edge.kind],
-
-            strokeWidth: primary
-              ? 1.2 + Math.min(0.6, (edge.weight - 1) * 0.2) + (lit ? 0.6 : 0)
-              : edge.kind === 'relation' ? 1 + Math.min(1.4, (edge.weight - 1) * 0.3) + (lit ? 0.6 : 0) : edgeWidth(edge.weight) + (lit ? 0.8 : 0),
+            x1: a.x, y1: a.y, x2: b.x, y2: b.y,
+            stroke: lit ? 'rgba(110,168,254,.85)' : EDGE_COLORS[edge.kind],
+            strokeWidth: edge.kind === 'relation' ? 1 + Math.min(1.4, (edge.weight - 1) * 0.3) + (lit ? 0.6 : 0) : edge.kind === 'mine' ? 1.2 : edgeWidth(edge.weight) + (lit ? 0.8 : 0),
             opacity: edgeOpacity,
             style: { pointerEvents: 'none' },
           }),
           // 透明加粗热区：细线难点中；hover 提示「谁↔谁 · 什么关系 · 几条记忆」，单击开关系详情抽屉
-          createElement('path', {
-            d,
-            fill: 'none',
+          createElement('line', {
+            x1: a.x, y1: a.y, x2: b.x, y2: b.y,
             stroke: 'rgba(0,0,0,0)',
             strokeWidth: 12,
             style: { cursor: 'pointer', pointerEvents: edgeOpacity > 0 ? 'stroke' : 'none' },
@@ -931,7 +888,7 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
         const p = posOf(node.id)
         if (p === undefined) return null
         const isSelected = node.id === selectedId
-        const isRoot = rootId !== null && node.id === rootId
+        const isRoot = node.id === pinId
         const cat = nodeCategory(node)
         const shared = {
           className: 'meow-explorer-gnode',
@@ -946,51 +903,37 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
           onMouseLeave: () => setHoverId(null),
           opacity: isDim(node.id) ? 0.2 : 1,
         }
-        if (node.kind === 'me' || node.id === starRootId) {
-          // 恒星「我」：光晕 + 大实心圆 + 居中标签，整张图的视觉锚点。
+        if (node.kind === 'me' || node.id === pinId) {
+          // 中心「我」：干净的大实心圆 + 居中标签，整张图的个人锚点。
           return createElement('g', { key: node.id, ...shared },
             createElement('title', null, nodeTip(node)),
-            createElement('circle', { cx: p.x, cy: p.y, r: 38, fill: CATEGORY_COLORS.me, opacity: 0.06 }),
+            createElement('circle', { cx: p.x, cy: p.y, r: 32, fill: CATEGORY_COLORS.me, opacity: 0.08 }),
             createElement('circle', {
-              cx: p.x, cy: p.y, r: 32, fill: CATEGORY_COLORS.me,
-              stroke: isSelected ? '#fff' : 'rgba(110,168,254,.65)', strokeWidth: isSelected ? 3 : 1.5,
+              cx: p.x, cy: p.y, r: 22, fill: CATEGORY_COLORS.me,
+              stroke: isSelected ? '#fff' : 'rgba(110,168,254,.55)', strokeWidth: isSelected ? 3 : 1.5,
             }),
             createElement('text', {
-              x: p.x, y: p.y + 4.5,
-              style: { fill: '#10131a', fontSize: '15px', fontWeight: 700, textAnchor: 'middle', stroke: 'none' },
+              x: p.x, y: p.y + 4,
+              style: { fill: '#10131a', fontSize: '14px', fontWeight: 700, textAnchor: 'middle', stroke: 'none' },
             }, node.label),
           )
         }
         const isPerson = node.kind === 'entity' && node.entityType === 'person'
-        const cluster = constellation?.clusterOf.get(node.id)
-        // 人物和属性的尺寸差距缩小：人物 12–15px，属性 6–9px，避免「人吃掉属性」
-        const radius = nodeRadius(node)
-        const color = CATEGORY_COLORS[cat]
-        const shownLabel = node.label.length > (isPerson ? 10 : 8)
-          ? `${node.label.slice(0, isPerson ? 10 : 8)}…`
-          : node.label
-        // 默认只显示人物名字；卫星 hover/选中/聚焦邻居时出现，小簇（≤5）直接显示。
+        const isolated = (degreeById.get(node.id) ?? 0) === 0
+        // 经典图：人和属性有大小差，但不夸张；零关系节点降级成小灰点
+        const radius = isolated
+          ? 6
+          : isPerson
+            ? 11 + Math.min(3, Math.log2(node.count + 1))
+            : node.kind === 'entity'
+              ? 5.5 + Math.min(2, Math.log2(node.count + 1) * 0.7)
+              : 6 + Math.min(11, Math.log2(node.count + 1) * 2.4)
+        const color = isolated ? 'rgba(170,180,195,.7)' : CATEGORY_COLORS[cat]
+        const labelOffset = node.kind === 'project' ? radius + 10 : radius + 6
         const nearFocus = focusId !== null && neighbors.has(node.id)
-        const singleton = cluster !== undefined && cluster.nodes.length === 1
-        const showLabel = showAllLabels || nearFocus || node.id === selectedId || singleton
-        // 单点簇（未连接/事件）标签放正下方，避免压在簇环上；其余水平放右侧
-        const singleType = cluster !== undefined && cluster.kind === 'type' && cluster.nodes.length === 1
-        const label = createElement('text', singleType ? {
-          x: p.x, y: p.y + radius + 12,
-          textAnchor: 'middle',
-          style: {
-            fontSize: '9px', fontWeight: 400, fill: 'rgba(225,232,245,.8)',
-          },
-        } : {
-          x: p.x + radius + (isPerson ? 8 : 5), y: p.y + 3.5,
-          style: {
-            fontSize: isPerson ? '10px' : '8px',
-            fontWeight: isPerson ? 600 : 400,
-            fill: cluster?.id === 'type:__unlinked__'
-              ? 'rgba(190,198,212,.8)'
-              : isPerson ? '#eef3ff' : 'rgba(225,232,245,.76)',
-          },
-        }, shownLabel)
+        const showLabel = showAllLabels || isPerson || node.id === pinId || topLabelIds.has(node.id) || nearFocus || node.id === selectedId
+        const maxLen = isPerson ? 12 : 10
+        const shownLabel = node.label.length > maxLen ? `${node.label.slice(0, maxLen)}…` : node.label
         return createElement('g', { key: node.id, ...shared },
           createElement('title', null, nodeTip(node)),
           // 聚焦根节点的外圈描边提示（双击重聚焦的视觉锚）
@@ -1005,42 +948,14 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
               stroke: isSelected ? '#fff' : color, strokeWidth: isSelected ? 2.5 : 1,
             })
             : createElement('circle', {
-              cx: p.x, cy: p.y,
-              r: (cluster?.kind === 'person' && !isPerson) ? radius * 0.68 : radius,
-              fill: cluster?.kind === 'person' && !isPerson
-                ? 'rgba(205,215,230,.45)'
-                : cluster !== undefined && cluster.kind === 'type' && cluster.nodes.length === 1
-                  ? 'none'
-                  : cluster?.id === 'type:__unlinked__' ? 'rgba(170,180,195,.55)' : color,
-              fillOpacity: cluster?.kind === 'person' && !isPerson
-                ? 1
-                : cluster !== undefined && cluster.kind === 'type' && cluster.nodes.length === 1
-                  ? 0
-                  : cluster?.id === 'type:__unlinked__' ? 1 : isPerson ? .9 : .58,
-              stroke: isSelected ? '#fff' : cluster?.id === 'type:__unlinked__' ? 'rgba(170,180,195,.8)' : (cluster?.kind === 'person' && !isPerson ? 'rgba(205,215,230,.65)' : color),
-              strokeWidth: isSelected ? 2.5 : (cluster !== undefined && cluster.kind === 'type' && cluster.nodes.length === 1 ? 1.8 : 1),
+              cx: p.x, cy: p.y, r: radius, fill: color, fillOpacity: .85,
+              stroke: isSelected ? '#fff' : color, strokeWidth: isSelected ? 2.5 : 1,
             }),
-          showLabel ? label : null,
+          showLabel && createElement('text', {
+            x: p.x + labelOffset, y: p.y + 3.5,
+            style: isolated ? { fill: 'rgba(170,178,192,.55)', fontSize: '7.5px' } : undefined,
+          }, shownLabel),
         )
-      }),
-      // 簇标题：人物簇也用人物名做标题，标题只放环外，不压节点
-      constellation?.clusters.filter((c) => !(c.kind === 'type' && c.nodes.length === 1)).map((c) => {
-        // 标题统一放在「簇心 → 画布中心」的反方向，即环外侧；再夹在画布内
-        const dx = c.center.x - width / 2
-        const dy = c.center.y - height / 2
-        const d = Math.hypot(dx, dy) || 1
-        const tx = Math.min(Math.max(c.center.x + (dx / d) * (c.bounds + 16), 40), width - 40)
-        const ty = Math.min(Math.max(c.center.y + (dy / d) * (c.bounds + 16) + 4, 14), height - 8)
-        return createElement('text', {
-          key: `cluster:${c.id}`,
-          x: tx, y: ty, textAnchor: 'middle',
-          style: {
-            fontSize: c.kind === 'person' ? '11px' : '10.5px',
-            fontWeight: 600,
-            letterSpacing: '.06em',
-            fill: c.kind === 'person' ? '#eef3ff' : 'rgba(220,228,240,.82)',
-          },
-        }, c.label)
       }),
     ),
   )
@@ -1409,7 +1324,7 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
   const [drawerEdge, setDrawerEdge] = useState<GraphEdge | null>(null)
   const [hops, setHops] = useState(2)
   const [focusRoot, setFocusRoot] = useState<string | null>(null)
-  const [showAllLabels, setShowAllLabels] = useState(false)
+  const [showAllLabels, setShowAllLabels] = useState(true)
   const [hiddenCats, setHiddenCats] = useState<ReadonlySet<GraphCategory>>(() => new Set())
   const [viewResetSeq, setViewResetSeq] = useState(0)
   // 实体图谱（LLM 抽取结果；只在手动重建 / dream 收尾更新）
