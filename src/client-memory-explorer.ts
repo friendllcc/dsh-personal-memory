@@ -670,14 +670,16 @@ interface GraphProps {
   onNodeDoubleClick: (node: GraphNode) => void
   onEdgeClick: (edge: GraphEdge) => void
   onBackgroundDoubleClick: () => void
+  /** 卫星标签是否全显（默认只显示行星/悬停节点，按钮可切换）。 */
+  showAllLabels: boolean
 }
 
 /** 边配色（按语义类型；悬停/选中触碰的边统一亮蓝）。 */
 const EDGE_COLORS = {
-  mine: 'rgba(110,168,254,.30)',
-  project: 'rgba(62,198,160,.32)',
-  cooc: 'rgba(160,170,190,.26)',
-  relation: 'rgba(110,168,254,.34)',
+  mine: 'rgba(110,168,254,.22)',
+  project: 'rgba(62,198,160,.20)',
+  cooc: 'rgba(160,170,190,.12)',
+  relation: 'rgba(110,168,254,.22)',
 } as const
 
 /** 边类型的短文案（边 tooltip / 关系详情抽屉副标题）。 */
@@ -707,7 +709,7 @@ interface GraphViewTransform { k: number; x: number; y: number }
 
 const INITIAL_VIEW: GraphViewTransform = { k: 1, x: 0, y: 0 }
 
-function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNodeClick, onNodeDoubleClick, onEdgeClick, onBackgroundDoubleClick }: GraphProps) {
+function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNodeClick, onNodeDoubleClick, onEdgeClick, onBackgroundDoubleClick, showAllLabels }: GraphProps) {
   const width = 760
   const height = 500
   // 星系布局：我=恒星、人=行星、属性=卫星；没有「我」时 computeStarLayout 内部退回力导向。
@@ -826,13 +828,6 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
     onDoubleClick: onBackgroundDoubleClick,
   },
     createElement('g', { transform: `translate(${view.x},${view.y}) scale(${view.k})` },
-      // 星系轨道（纯装饰，不接事件）：内圈=我的卫星带，外圈=行星轨道
-      star !== null && createElement('g', { key: 'orbits', style: { pointerEvents: 'none' }, opacity: 0.7 },
-        [0.12, 0.21, 0.33].map((f, i) => createElement('circle', {
-          key: i, cx: width / 2, cy: height / 2, r: Math.min(width, height) * f,
-          fill: 'none', stroke: 'rgba(140,170,220,.13)', strokeWidth: 1,
-          strokeDasharray: i === 2 ? '4 9' : '2 10',
-        }))),
       graph.edges.map((edge) => {
         const a = posOf(edge.source)
         const b = posOf(edge.target)
@@ -892,10 +887,6 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
             createElement('title', null, nodeTip(node)),
             createElement('circle', { cx: p.x, cy: p.y, r: 34, fill: CATEGORY_COLORS.me, opacity: 0.1 }),
             createElement('circle', {
-              cx: p.x, cy: p.y, r: 26, fill: 'none',
-              stroke: CATEGORY_COLORS.me, strokeWidth: 1, opacity: 0.35,
-            }),
-            createElement('circle', {
               cx: p.x, cy: p.y, r: 22, fill: CATEGORY_COLORS.me,
               stroke: isSelected ? '#fff' : 'rgba(110,168,254,.65)', strokeWidth: isSelected ? 3 : 1.5,
             }),
@@ -916,6 +907,9 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
         const shownLabel = node.label.length > (isPerson ? 10 : 8)
           ? `${node.label.slice(0, isPerson ? 10 : 8)}…`
           : node.label
+        // 默认只显示行星名字；卫星 hover/选中/聚焦邻居时再出现，避免内圈 30 个名字糊成一片。
+        const nearFocus = focusId !== null && neighbors.has(node.id)
+        const showLabel = isPerson || showAllLabels || nearFocus || node.id === selectedId
         // 卫星标签沿「父节点 → 自己」方向朝外排，避免和内圈挤在一起；行星/外圈保持水平
         const parentId = star?.parentOf.get(node.id)
         const parentPos = parentId === undefined ? undefined : posOf(parentId)
@@ -956,10 +950,6 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
             cx: p.x, cy: p.y, r: radius + 5, fill: 'none',
             stroke: 'rgba(110,168,254,.6)', strokeWidth: 1.2, strokeDasharray: '3 3',
           }),
-          isPerson && createElement('circle', {
-            cx: p.x, cy: p.y, r: radius + 4, fill: 'none',
-            stroke: color, strokeWidth: 1, opacity: 0.28,
-          }),
           node.kind === 'project'
             ? createElement('rect', {
               x: p.x - radius, y: p.y - radius, width: radius * 2, height: radius * 2,
@@ -970,7 +960,7 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
               cx: p.x, cy: p.y, r: radius, fill: color, fillOpacity: .85,
               stroke: isSelected ? '#fff' : color, strokeWidth: isSelected ? 2.5 : 1,
             }),
-          label,
+          showLabel ? label : null,
         )
       }),
     ),
@@ -1340,6 +1330,7 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
   const [drawerEdge, setDrawerEdge] = useState<GraphEdge | null>(null)
   const [hops, setHops] = useState(2)
   const [focusRoot, setFocusRoot] = useState<string | null>(null)
+  const [showAllLabels, setShowAllLabels] = useState(false)
   const [hiddenCats, setHiddenCats] = useState<ReadonlySet<GraphCategory>>(() => new Set())
   const [viewResetSeq, setViewResetSeq] = useState(0)
   // 实体图谱（LLM 抽取结果；只在手动重建 / dream 收尾更新）
@@ -1886,6 +1877,12 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
             : []),
           createElement('button', {
             className: 'meow-explorer-chip',
+            title: t('explorer.graph.labels'),
+            'data-active': showAllLabels ? 'true' : 'false',
+            onClick: () => setShowAllLabels((v) => !v),
+          }, t('explorer.graph.labels')),
+          createElement('button', {
+            className: 'meow-explorer-chip',
             title: t('explorer.graph.resetView'),
             onClick: () => setViewResetSeq((v) => v + 1),
           }, '\u21ba'),
@@ -1922,6 +1919,7 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
                       setDrawerEdge((cur) => (cur !== null && sameEdge(cur, edge) ? null : edge))
                     },
                     onBackgroundDoubleClick: () => setFocusRoot(null),
+                    showAllLabels,
                   }),
         ),
         createElement('div', { className: 'meow-explorer-legend' },

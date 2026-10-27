@@ -956,12 +956,12 @@ export function computeStarLayout(
   pos.set(hierarchy.rootId, { x: cx, y: cy })
 
   const planetCount = hierarchy.planets.length
-  const moonRing = (m: number): number => (m <= 0 ? 0 : Math.min(46, 24 + Math.sqrt(m) * 7))
+  const moonRing = (m: number): number => (m <= 0 ? 0 : Math.min(38, 22 + Math.sqrt(m) * 6))
   const maxMoons = Math.max(0, ...hierarchy.planets.map((p) => hierarchy.moonsOf.get(p.id)?.length ?? 0))
   const maxMoonR = moonRing(maxMoons)
   // 行星之间要放得下各自的卫星圆：按最挤的情况把轨道半径撑开（上限 0.40 × 短边）
   const needed = planetCount > 1 ? (planetCount * (2 * maxMoonR + 16)) / (2 * Math.PI) : 0
-  const planetR = Math.min(minDim * 0.40, Math.max(minDim * 0.33, needed))
+  const planetR = Math.min(minDim * 0.43, Math.max(minDim * 0.38, needed))
 
   // 行星
   const planetAngle = new Map<string, number>()
@@ -988,22 +988,39 @@ export function computeStarLayout(
     if (list.length <= 8) {
       placeRing(list, moonRing(list.length))
     } else {
-      placeRing(list.slice(0, 6), 30)
-      placeRing(list.slice(6), 46)
+      placeRing(list.slice(0, 6), 24)
+      placeRing(list.slice(6), 38)
     }
   })
 
-  // 恒星的卫星：黄金角螺旋，铺在 0.12–0.21 × 短边的内圈
-  const nMe = hierarchy.meMoons.length
-  const rMin = minDim * 0.12
-  const rMax = minDim * 0.21
-  const golden = Math.PI * (3 - Math.sqrt(5))
-  hierarchy.meMoons.forEach((node, i) => {
-    const t = (i + 0.5) / Math.max(1, nMe)
-    const r = rMin + (rMax - rMin) * Math.sqrt(t)
-    const a = i * golden + 0.45
-    pos.set(node.id, { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) })
-  })
+  // 恒星自己的卫星：按实体类型分簇，每个簇占一个扇区，簇间留白。
+  // 这样 30 个属性不会铺成一圈「米粒」，而是一簇一簇地围着恒星。
+  const groups = new Map<string, GraphNode[]>()
+  for (const node of hierarchy.meMoons) {
+    const key = node.kind === 'entity' ? (node.entityType ?? 'other') : (node.kind ?? 'other')
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key)!.push(node)
+  }
+  const groupList = [...groups.entries()].sort((a, b) => b[1].length - a[1].length || (a[0] < b[0] ? -1 : 1))
+  const total = hierarchy.meMoons.length
+  const gap = groupList.length > 1 ? 0.45 : 0 // 簇与簇之间的角度留白
+  const available = Math.PI * 2 - gap * groupList.length
+  const rMin = minDim * 0.15
+  const rMax = minDim * 0.26
+  let cursor = -Math.PI / 2
+  for (const [, items] of groupList) {
+    const sector = (available * items.length) / Math.max(1, total)
+    // 扇区内用向日葵散点（黄金比例），避免 9 个点排成一条斜线
+    const goldenFrac = 0.6180339887498949
+    items.forEach((node, j) => {
+      const t = (j + 0.5) / items.length
+      const r = rMin + (rMax - rMin) * Math.sqrt(t)
+      const frac = (j * goldenFrac + 0.37) % 1
+      const a = cursor + sector * (0.08 + 0.84 * frac)
+      pos.set(node.id, { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) })
+    })
+    cursor += sector + gap
+  }
 
   // 兜底外圈：既连不到人、也连不到恒星的点
   const outerR = Math.min(minDim * 0.44, minDim / 2 - 30)

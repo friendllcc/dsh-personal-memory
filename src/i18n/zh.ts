@@ -193,6 +193,7 @@ export const zh: Record<UiKey, string> = {
   'explorer.graph.hops.two': '2 跳',
   'explorer.graph.hops.all': '全部',
   'explorer.graph.backToMe': '回到「我」',
+  'explorer.graph.labels': '标签',
   'explorer.graph.resetView': '重置视图',
   'explorer.graph.clickHint': '点击节点/边查看关联记忆 · 双击以此为中心 · 滚轮缩放',
   'explorer.graph.edge.mine': '我的锚点',

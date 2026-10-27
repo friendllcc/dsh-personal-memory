@@ -204,6 +204,7 @@ export const en: Record<UiKey, string> = {
   'explorer.graph.hops.two': '2 hops',
   'explorer.graph.hops.all': 'All',
   'explorer.graph.backToMe': 'Back to "Me"',
+  'explorer.graph.labels': 'Labels',
   'explorer.graph.resetView': 'Reset view',
   'explorer.graph.clickHint': 'Click a node/edge for its memories · double-click to center · scroll to zoom',
   'explorer.graph.edge.mine': 'my anchor',
