@@ -195,6 +195,7 @@ export const ptBr: Record<UiKey, string> = {
   'explorer.graph.hops.two': '2 saltos',
   'explorer.graph.hops.all': 'Tudo',
   'explorer.graph.backToMe': 'Voltar para "Eu"',
+  'explorer.graph.unlinked': 'Não ligados',
   'explorer.graph.labels': 'Rótulos',
   'explorer.graph.resetView': 'Redefinir vista',
   'explorer.graph.clickHint': 'Clique em um nó/aresta para ver as memórias · duplo clique para centralizar · role para zoom',

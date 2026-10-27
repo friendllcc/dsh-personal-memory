@@ -34,7 +34,8 @@ import {
   CATEGORY_COLORS,
   CATEGORY_ORDER,
   categoryLabel,
-  computeStarLayout,
+  computeGraphLayout,
+  starConstellation,
   EXPLORER_LEVELS,
   filterGraphByDepth,
   filterRows,
@@ -51,7 +52,6 @@ import {
   rowsForEdge,
   rowsForNode,
   sortRows,
-  starHierarchy,
   timelineGroups,
   topKeywords,
   type ExplorerRow,
@@ -296,7 +296,7 @@ const EXPLORER_CSS = `
   stroke-linejoin: round;
 }
 .meow-explorer-graph .meow-explorer-gnode { cursor: pointer; transition: opacity .15s ease; }
-.meow-explorer-graph line { transition: opacity .15s ease; }
+.meow-explorer-graph line, .meow-explorer-graph path { transition: opacity .15s ease; }
 .meow-explorer-graph .meow-explorer-gnode:hover circle, .meow-explorer-graph .meow-explorer-gnode:hover rect { stroke-width: 2.5; }
 /* 边热区悬停提亮可视线（CSS 优先级高于 presentation attribute，无需 !important） */
 .meow-explorer-graph .meow-explorer-gedge:hover .meow-explorer-gedge-line { stroke: rgba(110,168,254,.85); }
@@ -712,10 +712,11 @@ const INITIAL_VIEW: GraphViewTransform = { k: 1, x: 0, y: 0 }
 function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNodeClick, onNodeDoubleClick, onEdgeClick, onBackgroundDoubleClick, showAllLabels }: GraphProps) {
   const width = 760
   const height = 500
-  // 星系布局：我=恒星、人=行星、属性=卫星；没有「我」时 computeStarLayout 内部退回力导向。
-  const star = useMemo(() => starHierarchy(graph, rootId ?? undefined), [graph, rootId])
+  // 星座簇布局：每个人/每组属性各成一簇；没有「我」时退回力导向。
+  const constellation = useMemo(() => starConstellation(graph, width, height, rootId ?? undefined), [graph, rootId])
+  const star = constellation?.hierarchy ?? null
   const starRootId = star?.rootId ?? null
-  const layout = useMemo(() => computeStarLayout(graph, width, height, rootId ?? undefined), [graph, rootId])
+  const layout = useMemo(() => constellation?.positions ?? computeGraphLayout(graph, width, height, 240, rootId ?? undefined), [constellation, graph, rootId])
   const [hoverId, setHoverId] = useState<string | null>(null)
   const [view, setView] = useState<GraphViewTransform>(INITIAL_VIEW)
   /** 手拖过的节点位置覆盖（优先于力导布局结果；子图变化即作废）。 */
@@ -817,6 +818,19 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
   const isDim = (id: string): boolean => focusId !== null && !neighbors.has(id)
   const edgeWidth = (weight: number): number => 1 + Math.min(3, (weight - 1) * 0.5)
   const labelsById = new Map(graph.nodes.map((n) => [n.id, n.label]))
+  const nodeById = new Map(graph.nodes.map((n) => [n.id, n]))
+  /** 节点半径：我 30 > 人物 18–20 > 属性 5–6.5（边线按这个缩短，避免穿过节点）。 */
+  const nodeRadius = (node: GraphNode): number => {
+    if (node.kind === 'me' || node.id === starRootId) return 30
+    if (constellation?.clusterOf.get(node.id)?.id === 'type:__unlinked__') return 7
+    if (node.kind === 'entity' && node.entityType === 'person') {
+      return 18 + Math.min(2, Math.log2(node.count + 1))
+    }
+    if (node.kind === 'entity') {
+      return 5 + Math.min(1.5, Math.log2(node.count + 1) * 0.5)
+    }
+    return 6 + Math.min(11, Math.log2(node.count + 1) * 2.4)
+  }
   return createElement('svg', {
     ref: svgRef,
     className: 'meow-explorer-graph',
@@ -828,6 +842,26 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
     onDoubleClick: onBackgroundDoubleClick,
   },
     createElement('g', { transform: `translate(${view.x},${view.y}) scale(${view.k})` },
+      // 簇的「引力圈」：细线、低透明、不填充，避免上一版色块像墨渍
+      constellation?.clusters.filter((c) => c.kind === 'person').map((c) => createElement('circle', {
+        key: `halo:${c.id}`,
+        cx: c.center.x, cy: c.center.y, r: c.bounds + (c.nodes.length <= 1 ? 6 : 10),
+        fill: 'none',
+        stroke: 'rgba(205,215,230,.22)',
+        strokeWidth: 1.4,
+        strokeDasharray: c.kind === 'person' ? undefined : '3 7',
+        opacity: 0.28,
+        style: { pointerEvents: 'none' },
+      })),
+      constellation?.clusters.filter((c) => c.kind === 'person').map((c) => createElement('circle', {
+        key: `halo2:${c.id}`,
+        cx: c.center.x, cy: c.center.y, r: c.bounds + (c.nodes.length <= 1 ? 9 : 15),
+        fill: 'none',
+        stroke: 'rgba(205,215,230,.06)',
+        strokeWidth: 2,
+        opacity: 0.07,
+        style: { pointerEvents: 'none' },
+      })),
       graph.edges.map((edge) => {
         const a = posOf(edge.source)
         const b = posOf(edge.target)
@@ -835,23 +869,54 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
         const touched = focusId !== null && (edge.source === focusId || edge.target === focusId)
         const edgeSelected = selectedEdge !== null && sameEdge(selectedEdge, edge)
         const lit = touched || edgeSelected
+        // 默认只画「我→人物」「人物→自己的卫星」「同簇内部」这三类边；
+        // 我→类型簇的 30 条辐射线、跨簇长线默认隐藏（hover/选中时再出现），避免蛛网。
+        const rootEdge = starRootId !== null && (edge.source === starRootId || edge.target === starRootId)
+        // 只保留「我→人物本人」的边；「我→人物的卫星」不算（否则每个卫星都有一条线，形成线束）
+        const otherId = starRootId !== null && edge.source === starRootId ? edge.target : edge.source
+        const otherNode = nodeById.get(otherId)
+        const primary = rootEdge && otherNode?.kind === 'entity' && otherNode.entityType === 'person'
+        const edgeOpacity = primary
+          ? (focusId === null ? 0.36 : lit ? 0.9 : 0.06)
+          : (lit ? 0.55 : 0)
         const tip = `${labelsById.get(edge.source) ?? edge.source} ↔ ${labelsById.get(edge.target) ?? edge.target} · ${edgeKindLabel(edge.kind, edge.relation_type)} · ${edge.weight}`
+        // 轻微弧线 + 从节点边缘出发：线不穿过「我」和簇内节点
+        const len = Math.hypot(b.x - a.x, b.y - a.y) || 1
+        const na = nodeById.get(edge.source)
+        const nb = nodeById.get(edge.target)
+        const ra = na === undefined ? 0 : nodeRadius(na) + 2
+        const rb = nb === undefined ? 0 : nodeRadius(nb) + 2
+        const ux = (b.x - a.x) / len
+        const uy = (b.y - a.y) / len
+        const ax = a.x + ux * ra
+        const ay = a.y + uy * ra
+        const bx = b.x - ux * rb
+        const by = b.y - uy * rb
+        const bend = primary ? 0 : len * 0.12
+        const mx = (ax + bx) / 2 + uy * bend
+        const my = (ay + by) / 2 - ux * bend
+        const d = `M ${ax.toFixed(2)} ${ay.toFixed(2)} Q ${mx.toFixed(2)} ${my.toFixed(2)} ${bx.toFixed(2)} ${by.toFixed(2)}`
         return createElement('g', { key: `${edge.source}->${edge.target}`, className: 'meow-explorer-gedge' },
           // 可视细线（不接管事件；热区线负责交互，CSS hover 提亮这条）
-          createElement('line', {
+          createElement('path', {
             className: 'meow-explorer-gedge-line',
-            x1: a.x, y1: a.y, x2: b.x, y2: b.y,
-            stroke: lit ? 'rgba(110,168,254,.85)' : EDGE_COLORS[edge.kind],
-            strokeWidth: edge.kind === 'relation' ? 1 + Math.min(1.4, (edge.weight - 1) * 0.3) + (lit ? 0.6 : 0) : edge.kind === 'mine' ? 1.2 : edgeWidth(edge.weight) + (lit ? 0.8 : 0),
-            opacity: focusId !== null && !lit ? 0.12 : 1,
+            d,
+            fill: 'none',
+            stroke: lit ? 'rgba(130,185,255,.95)' : primary ? 'rgba(125,175,235,.55)' : EDGE_COLORS[edge.kind],
+
+            strokeWidth: primary
+              ? 1.2 + Math.min(0.6, (edge.weight - 1) * 0.2) + (lit ? 0.6 : 0)
+              : edge.kind === 'relation' ? 1 + Math.min(1.4, (edge.weight - 1) * 0.3) + (lit ? 0.6 : 0) : edgeWidth(edge.weight) + (lit ? 0.8 : 0),
+            opacity: edgeOpacity,
             style: { pointerEvents: 'none' },
           }),
           // 透明加粗热区：细线难点中；hover 提示「谁↔谁 · 什么关系 · 几条记忆」，单击开关系详情抽屉
-          createElement('line', {
-            x1: a.x, y1: a.y, x2: b.x, y2: b.y,
+          createElement('path', {
+            d,
+            fill: 'none',
             stroke: 'rgba(0,0,0,0)',
             strokeWidth: 12,
-            style: { cursor: 'pointer', pointerEvents: 'stroke' },
+            style: { cursor: 'pointer', pointerEvents: edgeOpacity > 0 ? 'stroke' : 'none' },
             onMouseDown: (e: { stopPropagation: () => void }) => e.stopPropagation(),
             onClick: (e: { stopPropagation: () => void }) => {
               e.stopPropagation()
@@ -885,64 +950,47 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
           // 恒星「我」：光晕 + 大实心圆 + 居中标签，整张图的视觉锚点。
           return createElement('g', { key: node.id, ...shared },
             createElement('title', null, nodeTip(node)),
-            createElement('circle', { cx: p.x, cy: p.y, r: 34, fill: CATEGORY_COLORS.me, opacity: 0.1 }),
+            createElement('circle', { cx: p.x, cy: p.y, r: 38, fill: CATEGORY_COLORS.me, opacity: 0.06 }),
             createElement('circle', {
-              cx: p.x, cy: p.y, r: 22, fill: CATEGORY_COLORS.me,
+              cx: p.x, cy: p.y, r: 32, fill: CATEGORY_COLORS.me,
               stroke: isSelected ? '#fff' : 'rgba(110,168,254,.65)', strokeWidth: isSelected ? 3 : 1.5,
             }),
             createElement('text', {
               x: p.x, y: p.y + 4.5,
-              style: { fill: '#10131a', fontSize: '13px', fontWeight: 700, textAnchor: 'middle', stroke: 'none' },
+              style: { fill: '#10131a', fontSize: '15px', fontWeight: 700, textAnchor: 'middle', stroke: 'none' },
             }, node.label),
           )
         }
         const isPerson = node.kind === 'entity' && node.entityType === 'person'
-        // 行星比卫星大；卫星再按提及次数微调（层级一眼可见）
-        const radius = isPerson
-          ? 10 + Math.min(5, Math.log2(node.count + 1) * 1.5)
-          : node.kind === 'entity'
-            ? 4.5 + Math.min(4, Math.log2(node.count + 1) * 1.2)
-            : 6 + Math.min(11, Math.log2(node.count + 1) * 2.4)
+        const cluster = constellation?.clusterOf.get(node.id)
+        // 人物和属性的尺寸差距缩小：人物 12–15px，属性 6–9px，避免「人吃掉属性」
+        const radius = nodeRadius(node)
         const color = CATEGORY_COLORS[cat]
         const shownLabel = node.label.length > (isPerson ? 10 : 8)
           ? `${node.label.slice(0, isPerson ? 10 : 8)}…`
           : node.label
-        // 默认只显示行星名字；卫星 hover/选中/聚焦邻居时再出现，避免内圈 30 个名字糊成一片。
+        // 默认只显示人物名字；卫星 hover/选中/聚焦邻居时出现，小簇（≤5）直接显示。
         const nearFocus = focusId !== null && neighbors.has(node.id)
-        const showLabel = isPerson || showAllLabels || nearFocus || node.id === selectedId
-        // 卫星标签沿「父节点 → 自己」方向朝外排，避免和内圈挤在一起；行星/外圈保持水平
-        const parentId = star?.parentOf.get(node.id)
-        const parentPos = parentId === undefined ? undefined : posOf(parentId)
-        let label: ReturnType<typeof createElement> | null = null
-        if (parentPos !== undefined) {
-          const angle = Math.atan2(p.y - parentPos.y, p.x - parentPos.x)
-          const tx = p.x + Math.cos(angle) * (radius + 5)
-          const ty = p.y + Math.sin(angle) * (radius + 5)
-          let deg = (angle * 180) / Math.PI
-          let anchor = 'start'
-          // 左半圈旋转 180° 并用 end 锚点，保证文字始终朝外、不倒着读
-          if (deg > 90 || deg < -90) { deg += 180; anchor = 'end' }
-          label = createElement('text', {
-            x: tx, y: ty,
-            transform: `rotate(${deg} ${tx} ${ty})`,
-            textAnchor: anchor,
-            dominantBaseline: 'middle',
-            style: {
-              fontSize: isPerson ? '11px' : '9px',
-              fontWeight: isPerson ? 600 : 400,
-              fill: isPerson ? '#e8eefc' : 'rgba(225,232,245,.88)',
-            },
-          }, shownLabel)
-        } else {
-          label = createElement('text', {
-            x: p.x + radius + (isPerson ? 8 : 6), y: p.y + 3.5,
-            style: {
-              fontSize: isPerson ? '11px' : '9px',
-              fontWeight: isPerson ? 600 : 400,
-              fill: isPerson ? '#e8eefc' : 'rgba(225,232,245,.88)',
-            },
-          }, shownLabel)
-        }
+        const singleton = cluster !== undefined && cluster.nodes.length === 1
+        const showLabel = showAllLabels || nearFocus || node.id === selectedId || singleton
+        // 单点簇（未连接/事件）标签放正下方，避免压在簇环上；其余水平放右侧
+        const singleType = cluster !== undefined && cluster.kind === 'type' && cluster.nodes.length === 1
+        const label = createElement('text', singleType ? {
+          x: p.x, y: p.y + radius + 12,
+          textAnchor: 'middle',
+          style: {
+            fontSize: '9px', fontWeight: 400, fill: 'rgba(225,232,245,.8)',
+          },
+        } : {
+          x: p.x + radius + (isPerson ? 8 : 5), y: p.y + 3.5,
+          style: {
+            fontSize: isPerson ? '10px' : '8px',
+            fontWeight: isPerson ? 600 : 400,
+            fill: cluster?.id === 'type:__unlinked__'
+              ? 'rgba(190,198,212,.8)'
+              : isPerson ? '#eef3ff' : 'rgba(225,232,245,.76)',
+          },
+        }, shownLabel)
         return createElement('g', { key: node.id, ...shared },
           createElement('title', null, nodeTip(node)),
           // 聚焦根节点的外圈描边提示（双击重聚焦的视觉锚）
@@ -957,11 +1005,42 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
               stroke: isSelected ? '#fff' : color, strokeWidth: isSelected ? 2.5 : 1,
             })
             : createElement('circle', {
-              cx: p.x, cy: p.y, r: radius, fill: color, fillOpacity: .85,
-              stroke: isSelected ? '#fff' : color, strokeWidth: isSelected ? 2.5 : 1,
+              cx: p.x, cy: p.y,
+              r: (cluster?.kind === 'person' && !isPerson) ? radius * 0.68 : radius,
+              fill: cluster?.kind === 'person' && !isPerson
+                ? 'rgba(205,215,230,.45)'
+                : cluster !== undefined && cluster.kind === 'type' && cluster.nodes.length === 1
+                  ? 'none'
+                  : cluster?.id === 'type:__unlinked__' ? 'rgba(170,180,195,.55)' : color,
+              fillOpacity: cluster?.kind === 'person' && !isPerson
+                ? 1
+                : cluster !== undefined && cluster.kind === 'type' && cluster.nodes.length === 1
+                  ? 0
+                  : cluster?.id === 'type:__unlinked__' ? 1 : isPerson ? .9 : .58,
+              stroke: isSelected ? '#fff' : cluster?.id === 'type:__unlinked__' ? 'rgba(170,180,195,.8)' : (cluster?.kind === 'person' && !isPerson ? 'rgba(205,215,230,.65)' : color),
+              strokeWidth: isSelected ? 2.5 : (cluster !== undefined && cluster.kind === 'type' && cluster.nodes.length === 1 ? 1.8 : 1),
             }),
           showLabel ? label : null,
         )
+      }),
+      // 簇标题：人物簇也用人物名做标题，标题只放环外，不压节点
+      constellation?.clusters.filter((c) => !(c.kind === 'type' && c.nodes.length === 1)).map((c) => {
+        // 标题统一放在「簇心 → 画布中心」的反方向，即环外侧；再夹在画布内
+        const dx = c.center.x - width / 2
+        const dy = c.center.y - height / 2
+        const d = Math.hypot(dx, dy) || 1
+        const tx = Math.min(Math.max(c.center.x + (dx / d) * (c.bounds + 16), 40), width - 40)
+        const ty = Math.min(Math.max(c.center.y + (dy / d) * (c.bounds + 16) + 4, 14), height - 8)
+        return createElement('text', {
+          key: `cluster:${c.id}`,
+          x: tx, y: ty, textAnchor: 'middle',
+          style: {
+            fontSize: c.kind === 'person' ? '11px' : '10.5px',
+            fontWeight: 600,
+            letterSpacing: '.06em',
+            fill: c.kind === 'person' ? '#eef3ff' : 'rgba(220,228,240,.82)',
+          },
+        }, c.label)
       }),
     ),
   )
@@ -1545,13 +1624,26 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
       rowIds: n.rowIds,
     })
     const nodes: GraphNode[] = data.nodes.map(toNode)
-    const edges: GraphEdge[] = data.edges.map((e) => ({
-      source: `ent:${e.source}`,
-      target: `ent:${e.target}`,
-      weight: e.weight,
-      kind: (e.origin === 'memory' ? 'cooc' : 'relation') as 'cooc' | 'relation',
-      relation_type: e.relation_type,
-    }))
+    // 同一对实体可能有多条关系（不同 relation_type / 语义+共现）：显示层合并成一条，
+    // 避免「我→老婆」画出两三条叠在一起的 S 形线。
+    const byPair = new Map<string, GraphEdge>()
+    for (const e of data.edges) {
+      const source = `ent:${e.source}`
+      const target = `ent:${e.target}`
+      const key = source < target ? `${source}\u0000${target}` : `${target}\u0000${source}`
+      const cur = byPair.get(key)
+      const kind = (e.origin === 'memory' ? 'cooc' : 'relation') as 'cooc' | 'relation'
+      if (cur === undefined) {
+        byPair.set(key, { source, target, weight: e.weight, kind, relation_type: e.relation_type })
+      } else {
+        cur.weight += e.weight
+        if (cur.kind === 'cooc' && kind === 'relation') {
+          cur.kind = 'relation'
+          cur.relation_type = e.relation_type
+        }
+      }
+    }
+    const edges: GraphEdge[] = [...byPair.values()]
 
     // 「我」由 LLM 在抽取时作为规范实体给出（提示词要求），前端不再合成。
     // 没有任何语义关系的实体由 db 层的「同条记忆」边兜底连接。

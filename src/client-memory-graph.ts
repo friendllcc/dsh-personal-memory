@@ -296,7 +296,7 @@ export const CATEGORY_COLORS: Record<GraphCategory, string> = {
   organization: '#0ea5e9', // 天蓝：机构
   item: '#a855f7', // 紫：物品
   project: '#14b8a6', // 青绿：项目
-  thing: '#94a3b8', // 灰：概念/其他
+  thing: '#8fa9d6', // 浅蓝：概念/其他（与人物卫星的银灰区分）
   experience: '#f472b6', // 粉：经验·原则
   self: '#64748b', // 深灰蓝：AI 自身
 }
@@ -901,7 +901,7 @@ export function starHierarchy(graph: MemoryGraph, rootId?: string): StarHierarch
 
   const byLabel = (a: GraphNode, b: GraphNode): number => (a.label < b.label ? -1 : a.label > b.label ? 1 : 0)
   const planets = graph.nodes
-    .filter((n) => n.id !== root.id && isPersonNode(n))
+    .filter((n) => n.id !== root.id && isPersonNode(n) && (nbrs.get(n.id)?.length ?? 0) > 0)
     .sort((a, b) => weight(b.id, root.id) - weight(a.id, root.id) || byLabel(a, b))
   const personIds = new Set(planets.map((p) => p.id))
   const moonsOf = new Map<string, GraphNode[]>()
@@ -938,63 +938,70 @@ export function starHierarchy(graph: MemoryGraph, rootId?: string): StarHierarch
  * 恒星自己的卫星用黄金角螺旋铺在内圈（避免挤在一条圆环上）。
  * 没有「我」时退回 computeGraphLayout（力导向）。
  */
-export function computeStarLayout(
+export interface StarCluster {
+  id: string
+  label: string
+  kind: 'person' | 'type'
+  /** 实体类型（人物簇=person；类型簇=health/location/...）。 */
+  entityType: string
+  center: GraphPoint
+  radius: number
+  /** 实际占位半径（含节点自身大小），画底衬用。 */
+  bounds: number
+  nodes: GraphNode[]
+  /** 人物簇的中心节点 id（人物本人）。 */
+  anchorId?: string
+}
+
+export interface StarConstellation {
+  positions: Map<string, GraphPoint>
+  clusters: StarCluster[]
+  clusterOf: Map<string, StarCluster>
+  hierarchy: StarHierarchy
+}
+
+function moonRingRadius(m: number): number {
+  return m <= 0 ? 0 : Math.min(32, 20 + Math.sqrt(m) * 4)
+}
+
+/**
+ * 星座簇布局：每个人（+ 他的卫星）是一簇，我自己的属性按类型各成一簇；
+ * 簇心用黄金角螺旋撒在画布上，再做圆 packing，不再让所有点绕一个圈。
+ * 返回位置 + 簇信息（渲染星团标题/判断标签密度用）。
+ */
+export function starConstellation(
   graph: MemoryGraph,
   width = 760,
   height = 500,
   rootId?: string,
-): Map<string, GraphPoint> {
+): StarConstellation | null {
   const hierarchy = starHierarchy(graph, rootId)
-  if (hierarchy === null) return computeGraphLayout(graph, width, height, 240, rootId)
+  if (hierarchy === null) return null
+  const positions = new Map<string, GraphPoint>()
+  if (graph.nodes.length === 0) return { positions, clusters: [], clusterOf: new Map(), hierarchy }
 
-  const pos = new Map<string, GraphPoint>()
-  const { nodes } = graph
-  if (nodes.length === 0) return pos
   const cx = width / 2
   const cy = height / 2
   const minDim = Math.min(width, height)
-  pos.set(hierarchy.rootId, { x: cx, y: cy })
+  positions.set(hierarchy.rootId, { x: cx, y: cy })
 
-  const planetCount = hierarchy.planets.length
-  const moonRing = (m: number): number => (m <= 0 ? 0 : Math.min(38, 22 + Math.sqrt(m) * 6))
-  const maxMoons = Math.max(0, ...hierarchy.planets.map((p) => hierarchy.moonsOf.get(p.id)?.length ?? 0))
-  const maxMoonR = moonRing(maxMoons)
-  // 行星之间要放得下各自的卫星圆：按最挤的情况把轨道半径撑开（上限 0.40 × 短边）
-  const needed = planetCount > 1 ? (planetCount * (2 * maxMoonR + 16)) / (2 * Math.PI) : 0
-  const planetR = Math.min(minDim * 0.43, Math.max(minDim * 0.38, needed))
-
-  // 行星
-  const planetAngle = new Map<string, number>()
-  hierarchy.planets.forEach((p, i) => {
-    const a = -Math.PI / 2 + (2 * Math.PI * i) / Math.max(1, planetCount)
-    const m = hierarchy.moonsOf.get(p.id)?.length ?? 0
-    const r = planetR + Math.min(14, Math.max(0, m - 5) * 3)
-    planetAngle.set(p.id, a)
-    pos.set(p.id, { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) })
-  })
-
-  // 行星的卫星：≤8 颗一圈，>8 颗分内外两圈
-  hierarchy.planets.forEach((p, i) => {
-    const list = hierarchy.moonsOf.get(p.id) ?? []
-    const pp = pos.get(p.id)
-    if (pp === undefined || list.length === 0) return
-    const phase = -Math.PI / 2 + i * 0.9
-    const placeRing = (items: GraphNode[], radius: number): void => {
-      items.forEach((node, j) => {
-        const a = phase + (2 * Math.PI * j) / Math.max(1, items.length)
-        pos.set(node.id, { x: pp.x + radius * Math.cos(a), y: pp.y + radius * Math.sin(a) })
-      })
-    }
-    if (list.length <= 8) {
-      placeRing(list, moonRing(list.length))
-    } else {
-      placeRing(list.slice(0, 6), 24)
-      placeRing(list.slice(6), 38)
-    }
-  })
-
-  // 恒星自己的卫星：按实体类型分簇，每个簇占一个扇区，簇间留白。
-  // 这样 30 个属性不会铺成一圈「米粒」，而是一簇一簇地围着恒星。
+  const clusters: StarCluster[] = []
+  // 人物簇：人 + 卫星
+  for (const p of hierarchy.planets) {
+    const moons = hierarchy.moonsOf.get(p.id) ?? []
+    clusters.push({
+      id: `person:${p.id}`,
+      label: p.label,
+      kind: 'person',
+      entityType: 'person',
+      center: { x: 0, y: 0 },
+      radius: Math.max(20, moonRingRadius(moons.length) + 8),
+      bounds: 0,
+      nodes: [p, ...moons],
+      anchorId: p.id,
+    })
+  }
+  // 类型簇：我自己的属性按类型分组
   const groups = new Map<string, GraphNode[]>()
   for (const node of hierarchy.meMoons) {
     const key = node.kind === 'entity' ? (node.entityType ?? 'other') : (node.kind ?? 'other')
@@ -1002,41 +1009,216 @@ export function computeStarLayout(
     groups.get(key)!.push(node)
   }
   const groupList = [...groups.entries()].sort((a, b) => b[1].length - a[1].length || (a[0] < b[0] ? -1 : 1))
-  const total = hierarchy.meMoons.length
-  const gap = groupList.length > 1 ? 0.45 : 0 // 簇与簇之间的角度留白
-  const available = Math.PI * 2 - gap * groupList.length
-  const rMin = minDim * 0.15
-  const rMax = minDim * 0.26
-  let cursor = -Math.PI / 2
-  for (const [, items] of groupList) {
-    const sector = (available * items.length) / Math.max(1, total)
-    // 扇区内用向日葵散点（黄金比例），避免 9 个点排成一条斜线
-    const goldenFrac = 0.6180339887498949
-    items.forEach((node, j) => {
-      const t = (j + 0.5) / items.length
-      const r = rMin + (rMax - rMin) * Math.sqrt(t)
-      const frac = (j * goldenFrac + 0.37) % 1
-      const a = cursor + sector * (0.08 + 0.84 * frac)
-      pos.set(node.id, { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) })
+  for (const [type, items] of groupList) {
+    clusters.push({
+      id: `type:${type}`,
+      label: categoryLabel(nodeCategory(items[0])),
+      kind: 'type',
+      entityType: type,
+      center: { x: 0, y: 0 },
+      radius: Math.max(26, Math.min(38, 16 + 7.5 * Math.sqrt(items.length))),
+      bounds: 0,
+      nodes: items,
     })
-    cursor += sector + gap
+  }
+  // 零关系实体单独成簇：不伪装成行星，也不画假边
+  if (hierarchy.outer.length > 0) {
+    clusters.push({
+      id: 'type:__unlinked__',
+      label: t('explorer.graph.unlinked'),
+      kind: 'type',
+      entityType: 'thing',
+      center: { x: 0, y: 0 },
+      radius: Math.max(24, Math.min(30, 14 + 6 * Math.sqrt(hierarchy.outer.length))),
+      bounds: 0,
+      nodes: hierarchy.outer,
+    })
   }
 
-  // 兜底外圈：既连不到人、也连不到恒星的点
-  const outerR = Math.min(minDim * 0.44, minDim / 2 - 30)
-  hierarchy.outer.forEach((node, i) => {
-    const a = -Math.PI / 2 + (2 * Math.PI * i) / Math.max(1, hierarchy.outer.length)
-    pos.set(node.id, { x: cx + outerR * Math.cos(a), y: cy + outerR * Math.sin(a) })
-  })
+  // 簇心：人物在外圈、类型簇在内圈，角度错开，避免所有点同一半径、也避免
+  // 恒星→人物的连线穿过类型簇。
+  const personClusters = clusters.filter((c) => c.kind === 'person')
+  const typeClusters = clusters.filter((c) => c.kind === 'type')
+  const personR = Math.min(minDim * 0.25, 125)
+  const typeR = Math.min(minDim * 0.37, 185)
+  const placeRing = (list: StarCluster[], radius: number, offset: number): void => {
+    list.forEach((c, i) => {
+      const a = offset + (2 * Math.PI * i) / Math.max(1, list.length)
+      c.center = { x: cx + radius * Math.cos(a), y: cy + radius * Math.sin(a) }
+    })
+  }
+  if (personClusters.length > 0) {
+    placeRing(personClusters, personR, -Math.PI / 2)
+  }
+  if (typeClusters.length > 0) {
+    const offset = personClusters.length > 0
+      ? -Math.PI / 2 + Math.PI / personClusters.length
+      : -Math.PI / 2
+    placeRing(typeClusters, typeR, offset)
+  }
+  // 互斥 + 弱径向回弹：既解决粘连，又保留「人物外圈、类型内圈」的层次
+  const gap = 24
+  const rootClear = 52
+  const targetR = (c: StarCluster): number => (c.kind === 'person' ? personR : typeR)
+  for (let iter = 0; iter < 260; iter++) {
+    for (let i = 0; i < clusters.length; i++) {
+      for (let j = i + 1; j < clusters.length; j++) {
+        const a = clusters[i]!
+        const b = clusters[j]!
+        let dx = b.center.x - a.center.x
+        let dy = b.center.y - a.center.y
+        let d = Math.hypot(dx, dy)
+        const min = a.radius + b.radius + gap
+        if (d < min) {
+          if (d < 0.001) { dx = 1; dy = 0; d = 1 }
+          const push = (min - d) / 2
+          const ux = dx / d
+          const uy = dy / d
+          if (a.kind === 'person' && b.kind === 'person') continue
+          if (a.kind === 'person') {
+            b.center.x += ux * push * 2; b.center.y += uy * push * 2
+          } else if (b.kind === 'person') {
+            a.center.x -= ux * push * 2; a.center.y -= uy * push * 2
+          } else {
+            a.center.x -= ux * push; a.center.y -= uy * push
+            b.center.x += ux * push; b.center.y += uy * push
+          }
+        }
+      }
+    }
+    for (const c of clusters) {
+      if (c.kind === 'person') continue
+      let dx = c.center.x - cx
+      let dy = c.center.y - cy
+      let d = Math.hypot(dx, dy)
+      if (d < 0.001) { dx = 1; dy = 0; d = 1 }
+      const pull = (targetR(c) - d) * 0.012
+      c.center.x += (dx / d) * pull
+      c.center.y += (dy / d) * pull
+      dx = c.center.x - cx
+      dy = c.center.y - cy
+      d = Math.hypot(dx, dy)
+      const min = rootClear + c.radius
+      if (d < min) {
+        c.center.x = cx + (dx / d) * min
+        c.center.y = cy + (dy / d) * min
+      }
+      c.center.x = Math.min(Math.max(c.center.x, c.radius + 10), width - c.radius - 10)
+      c.center.y = Math.min(Math.max(c.center.y, c.radius + 10), height - c.radius - 10)
+    }
+  }
 
-  // 夹紧到画布（恒星不夹，永远在中心）
-  const pad = 20
-  for (const [id, p] of pos) {
+  // 簇内布局
+  const golden = 2.399963229728653
+  const clusterOf = new Map<string, StarCluster>()
+  for (const [ci, c] of clusters.entries()) {
+    for (const node of c.nodes) clusterOf.set(node.id, c)
+    if (c.kind === 'person' && c.anchorId !== undefined) {
+      positions.set(c.anchorId, { x: c.center.x, y: c.center.y })
+      const moons = c.nodes.filter((n) => n.id !== c.anchorId)
+      const placeRing = (items: GraphNode[], radius: number, phase: number): void => {
+        items.forEach((node, j) => {
+          const a = phase + (2 * Math.PI * j) / Math.max(1, items.length)
+          positions.set(node.id, { x: c.center.x + radius * Math.cos(a), y: c.center.y + radius * Math.sin(a) })
+        })
+      }
+      if (moons.length <= 8) {
+        placeRing(moons, moonRingRadius(moons.length), ci * 0.9)
+      } else {
+        placeRing(moons.slice(0, 6), 24, ci * 0.9)
+        placeRing(moons.slice(6), 38, ci * 0.9 + 0.4)
+      }
+    } else {
+      // 类型簇：向日葵散点，标题在上方
+      const n = c.nodes.length
+      const rMax = Math.max(10, c.radius - 10)
+      c.nodes.forEach((node, j) => {
+        const t = (j + 0.5) / Math.max(1, n)
+        const jitterR = ((j * 53) % 11 - 5) * 0.9
+        const jitterA = ((j * 37) % 7 - 3) * 0.018
+        const r = n === 1 ? 0 : Math.max(6, 7 + (rMax - 7) * Math.sqrt(t) + jitterR)
+        const a = j * golden + ci * 0.9 + jitterA
+        positions.set(node.id, { x: c.center.x + r * Math.cos(a), y: c.center.y + r * Math.sin(a) })
+      })
+    }
+  }
+
+  // 夹紧
+  const pad = 16
+  for (const [id, p] of positions) {
     if (id === hierarchy.rootId) continue
     p.x = Math.min(Math.max(p.x, pad), width - pad)
     p.y = Math.min(Math.max(p.y, pad), height - pad)
   }
-  return pos
+  // 实际占位半径（底衬按它画，避免“盖不住/盖到别人”）
+  for (const c of clusters) {
+    let maxD = 0
+    for (const n of c.nodes) {
+      const p = positions.get(n.id)
+      if (p !== undefined) maxD = Math.max(maxD, Math.hypot(p.x - c.center.x, p.y - c.center.y))
+    }
+    c.bounds = Math.max(c.radius, maxD + 10)
+  }
+  // 二次避让：按「底衬/簇环的实际占位」而不是理论 radius 推开，确保环不相交。
+  const shift = (c: StarCluster, dx: number, dy: number): void => {
+    if (dx === 0 && dy === 0) return
+    c.center.x += dx
+    c.center.y += dy
+    for (const n of c.nodes) {
+      const p = positions.get(n.id)
+      if (p !== undefined) { p.x += dx; p.y += dy }
+    }
+  }
+  for (let iter = 0; iter < 140; iter++) {
+    for (let i = 0; i < clusters.length; i++) {
+      for (let j = i + 1; j < clusters.length; j++) {
+        const a = clusters[i]!
+        const b = clusters[j]!
+        let dx = b.center.x - a.center.x
+        let dy = b.center.y - a.center.y
+        let d = Math.hypot(dx, dy)
+        const min = a.bounds + b.bounds + 40
+        if (d < min) {
+          if (d < 0.001) { dx = 1; dy = 0; d = 1 }
+          const push = (min - d) / 2
+          const ux = dx / d
+          const uy = dy / d
+          if (a.kind === 'person' && b.kind === 'person') continue
+          if (a.kind === 'person') {
+            shift(b, ux * push * 2, uy * push * 2)
+          } else if (b.kind === 'person') {
+            shift(a, -ux * push * 2, -uy * push * 2)
+          } else {
+            shift(a, -ux * push, -uy * push)
+            shift(b, ux * push, uy * push)
+          }
+        }
+      }
+    }
+    for (const c of clusters) {
+      if (c.kind === 'person') continue
+      let dx = c.center.x - cx
+      let dy = c.center.y - cy
+      let d = Math.hypot(dx, dy)
+      if (d < 0.001) { dx = 1; dy = 0; d = 1 }
+      const min = 30 + c.bounds + 10
+      if (d < min) shift(c, (dx / d) * (min - d), (dy / d) * (min - d))
+      const nx = Math.min(Math.max(c.center.x, c.bounds + 10), width - c.bounds - 10)
+      const ny = Math.min(Math.max(c.center.y, c.bounds + 10), height - c.bounds - 10)
+      shift(c, nx - c.center.x, ny - c.center.y)
+    }
+  }
+  return { positions, clusters, clusterOf, hierarchy }
+}
+
+export function computeStarLayout(
+  graph: MemoryGraph,
+  width = 760,
+  height = 500,
+  rootId?: string,
+): Map<string, GraphPoint> {
+  const constellation = starConstellation(graph, width, height, rootId)
+  return constellation?.positions ?? computeGraphLayout(graph, width, height, 240, rootId)
 }
 
 // ── 卡片视图：过滤 / 摘要 / 相对时间 ─────────────────────────────────────────
