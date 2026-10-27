@@ -1,6 +1,6 @@
 {
   "name": "dsh-personal-memory",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Cross-session GLOBAL personal memory for DeepSeek Harness (meow-memory fork): seven-layer SQLite memory stored in a single user-global database, first-turn snapshot injection, per-message keyword hits, memory_remember/search/project tools, automatic reflection with reflection-fold UI, idle-triggered dream consolidation, and a memory explorer panel (cards + knowledge graph) in the dsh web frontend.",
   "keywords": [
     "deepseek-harness",

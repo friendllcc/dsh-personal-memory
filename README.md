@@ -45,13 +45,13 @@
 从 [Releases](https://github.com/friendllcc/dsh-personal-memory/releases) 下载最新版 tgz（已预编译，无需本地构建），执行：
 
 ```sh
-dsh plugin --profile web add "/path/to/dsh-personal-memory-0.4.2.tgz"
+dsh plugin --profile web add "/path/to/dsh-personal-memory-0.4.3.tgz"
 ```
 
 也可以直接给插件安装命令一个 Release 下载地址：
 
 ```sh
-dsh plugin --profile web add "https://github.com/friendllcc/dsh-personal-memory/releases/download/v0.4.2/dsh-personal-memory-0.4.2.tgz"
+dsh plugin --profile web add "https://github.com/friendllcc/dsh-personal-memory/releases/download/v0.4.3/dsh-personal-memory-0.4.3.tgz"
 ```
 
 装完重启 `dsh web`。升级 = 下载新版 tgz 重复上述命令后重启，原有记忆数据保留。
