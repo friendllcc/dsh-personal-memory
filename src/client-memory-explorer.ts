@@ -34,10 +34,12 @@ import {
   CATEGORY_COLORS,
   CATEGORY_ORDER,
   categoryLabel,
+  collectMeAliases,
   computeGraphLayout,
   EXPLORER_LEVELS,
   filterGraphByDepth,
   filterRows,
+  graphCommunities,
   formatWhen,
   hygieneRows,
   LEVEL_COLORS,
@@ -671,6 +673,8 @@ interface GraphProps {
   onBackgroundDoubleClick: () => void
   /** 卫星标签是否全显（默认只显示行星/悬停节点，按钮可切换）。 */
   showAllLabels: boolean
+  /** 是否显示社区簇域。 */
+  showClusters: boolean
 }
 
 /** 边配色（按语义类型；悬停/选中触碰的边统一亮蓝）。 */
@@ -708,7 +712,7 @@ interface GraphViewTransform { k: number; x: number; y: number }
 
 const INITIAL_VIEW: GraphViewTransform = { k: 1, x: 0, y: 0 }
 
-function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNodeClick, onNodeDoubleClick, onEdgeClick, onBackgroundDoubleClick, showAllLabels }: GraphProps) {
+function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNodeClick, onNodeDoubleClick, onEdgeClick, onBackgroundDoubleClick, showAllLabels, showClusters }: GraphProps) {
   const width = 760
   const height = 500
   // 经典力导向：优先钉住聚焦节点，否则自动钉住规范实体「我」
@@ -834,6 +838,26 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
       .slice(0, 18)
       .map((n) => n.id),
   )
+  // 社区簇域：经典图里用极淡的椭圆域 + 类型标签表达「一簇」，不用硬边框
+  const communities = useMemo(() => graphCommunities(graph, pinId ?? undefined), [graph, pinId])
+  const hulls = showClusters
+    ? communities.map((g) => {
+      const ps = g.nodes.map((n) => posOf(n.id)).filter((p): p is { x: number; y: number } => p !== undefined)
+      if (ps.length < 2) return null
+      const minX = Math.min(...ps.map((p) => p.x))
+      const maxX = Math.max(...ps.map((p) => p.x))
+      const minY = Math.min(...ps.map((p) => p.y))
+      const maxY = Math.max(...ps.map((p) => p.y))
+      const focusInside = focusId === null || g.nodes.some((n) => n.id === focusId)
+      const rx = (maxX - minX) / 2 + 20
+      const ry = (maxY - minY) / 2 + 18
+      // 太散的社区不画域（否则一个大圈包住全图）；人物圈至少 2 人，类型圈至少 3 点
+      if (rx > 140 || ry > 140) return null
+      if (g.id.startsWith('person:') && g.nodes.length < 2) return null
+      if (g.id.startsWith('type:') && g.nodes.length < 3) return null
+      return { g, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2, rx, ry, focusInside }
+    }).filter((h): h is NonNullable<typeof h> => h !== null)
+    : []
   return createElement('svg', {
     ref: svgRef,
     className: 'meow-explorer-graph',
@@ -845,6 +869,21 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
     onDoubleClick: onBackgroundDoubleClick,
   },
     createElement('g', { transform: `translate(${view.x},${view.y}) scale(${view.k})` },
+      hulls.map((h) => createElement('g', {
+        key: `hull:${h.g.id}`,
+        opacity: h.focusInside ? 1 : 0.25,
+        style: { pointerEvents: 'none' },
+      },
+        createElement('ellipse', {
+          cx: h.cx, cy: h.cy, rx: h.rx, ry: h.ry,
+          fill: h.g.color, fillOpacity: 0.035,
+          stroke: h.g.color, strokeOpacity: 0.24, strokeWidth: 1, strokeDasharray: '3 7',
+        }),
+        h.g.id.startsWith('type:') && createElement('text', {
+          x: h.cx, y: h.cy - h.ry - 6, textAnchor: 'middle',
+          style: { fontSize: '10px', fontWeight: 500, letterSpacing: '.05em', fill: 'rgba(220,228,240,.82)' },
+        }, h.g.label),
+      )),
       graph.edges.map((edge) => {
         const a = posOf(edge.source)
         const b = posOf(edge.target)
@@ -854,17 +893,25 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
         const lit = touched || edgeSelected
         // 默认只画语义边，并隐藏「我→属性」的 44 条辐射线；悬停/选中时再展开。
         const baseVisible = edge.kind !== 'cooc'
+        const aNode = nodeById.get(edge.source)
+        const bNode = nodeById.get(edge.target)
+        const rootPersonEdge = pinId !== null
+          && ((edge.source === pinId && bNode?.entityType === 'person') || (edge.target === pinId && aNode?.entityType === 'person'))
+        const personAttrEdge = (aNode?.entityType === 'person') !== (bNode?.entityType === 'person')
+        const rootAttrEdge = pinId !== null && (edge.source === pinId || edge.target === pinId) && !rootPersonEdge
+        const baseOpacity = rootPersonEdge ? 0.5 : rootAttrEdge ? 0 : personAttrEdge ? 0.14 : 0.07
+        const baseWidth = rootPersonEdge ? 1.8 : personAttrEdge ? 1.1 : 0.8
         const edgeOpacity = focusId === null
-          ? (baseVisible ? 0.09 : 0)
-          : lit ? 0.85 : (baseVisible ? 0.04 : 0)
+          ? (baseVisible ? baseOpacity : 0)
+          : lit ? 0.9 : (baseVisible ? 0.035 : 0)
         const tip = `${labelsById.get(edge.source) ?? edge.source} ↔ ${labelsById.get(edge.target) ?? edge.target} · ${edgeKindLabel(edge.kind, edge.relation_type)} · ${edge.weight}`
         return createElement('g', { key: `${edge.source}->${edge.target}`, className: 'meow-explorer-gedge' },
           // 可视细线（不接管事件；热区线负责交互，CSS hover 提亮这条）
           createElement('line', {
             className: 'meow-explorer-gedge-line',
             x1: a.x, y1: a.y, x2: b.x, y2: b.y,
-            stroke: lit ? 'rgba(110,168,254,.85)' : EDGE_COLORS[edge.kind],
-            strokeWidth: edge.kind === 'relation' ? 1 + Math.min(1.4, (edge.weight - 1) * 0.3) + (lit ? 0.6 : 0) : edge.kind === 'mine' ? 1.2 : edgeWidth(edge.weight) + (lit ? 0.8 : 0),
+            stroke: lit ? 'rgba(130,185,255,.95)' : EDGE_COLORS[edge.kind],
+            strokeWidth: baseWidth + (lit ? 0.8 : 0),
             opacity: edgeOpacity,
             style: { pointerEvents: 'none' },
           }),
@@ -901,7 +948,7 @@ function GraphView({ graph, rootId, selectedId, selectedEdge, viewResetSeq, onNo
           onMouseDown: (e: { button: number; clientX: number; clientY: number; stopPropagation: () => void }) => startNodeDrag(node, e),
           onMouseEnter: () => setHoverId(node.id),
           onMouseLeave: () => setHoverId(null),
-          opacity: isDim(node.id) ? 0.2 : 1,
+          opacity: isDim(node.id) ? 0.08 : 1,
         }
         if (node.kind === 'me' || node.id === pinId) {
           // 中心「我」：干净的大实心圆 + 居中标签，整张图的个人锚点。
@@ -1325,6 +1372,7 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
   const [hops, setHops] = useState(2)
   const [focusRoot, setFocusRoot] = useState<string | null>(null)
   const [showAllLabels, setShowAllLabels] = useState(true)
+  const [showClusters, setShowClusters] = useState(true)
   const [hiddenCats, setHiddenCats] = useState<ReadonlySet<GraphCategory>>(() => new Set())
   const [viewResetSeq, setViewResetSeq] = useState(0)
   // 实体图谱（LLM 抽取结果；只在手动重建 / dream 收尾更新）
@@ -1538,7 +1586,7 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
       entityType: n.type,
       rowIds: n.rowIds,
     })
-    const nodes: GraphNode[] = data.nodes.map(toNode)
+    let nodes: GraphNode[] = data.nodes.map(toNode)
     // 同一对实体可能有多条关系（不同 relation_type / 语义+共现）：显示层合并成一条，
     // 避免「我→老婆」画出两三条叠在一起的 S 形线。
     const byPair = new Map<string, GraphEdge>()
@@ -1558,12 +1606,36 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
         }
       }
     }
-    const edges: GraphEdge[] = [...byPair.values()]
+    let edges: GraphEdge[] = [...byPair.values()]
 
-    // 「我」由 LLM 在抽取时作为规范实体给出（提示词要求），前端不再合成。
-    // 没有任何语义关系的实体由 db 层的「同条记忆」边兜底连接。
+    // 自报姓名/昵称折叠进「我」：它就是同一个人，不该作为独立人物节点出现
+    const aliases = new Set(collectMeAliases(allRows).map((a) => a.toLowerCase()))
+    const meNode = nodes.find((n) => n.label === '我' || n.label === 'Me')
+    if (meNode !== undefined && aliases.size > 0) {
+      const aliasIds = new Set(
+        nodes.filter((n) => n.id !== meNode.id && aliases.has(n.label.toLowerCase())).map((n) => n.id),
+      )
+      if (aliasIds.size > 0) {
+        const rowIds = new Set(meNode.rowIds ?? [])
+        for (const n of nodes) if (aliasIds.has(n.id)) for (const id of n.rowIds ?? []) rowIds.add(id)
+        meNode.rowIds = [...rowIds]
+        nodes = nodes.filter((n) => !aliasIds.has(n.id))
+        const redirect = (id: string): string => (aliasIds.has(id) ? meNode.id : id)
+        const merged = new Map<string, GraphEdge>()
+        for (const e of edges) {
+          const source = redirect(e.source)
+          const target = redirect(e.target)
+          if (source === target) continue
+          const key = source < target ? `${source}\u0000${target}` : `${target}\u0000${source}`
+          const cur = merged.get(key)
+          if (cur === undefined) merged.set(key, { ...e, source, target })
+          else cur.weight += e.weight
+        }
+        edges = [...merged.values()]
+      }
+    }
     return { nodes, edges }
-  }, [entityData])
+  }, [entityData, allRows])
 
   const graph = useMemo(() => {
     let g = fullGraph
@@ -1884,6 +1956,12 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
             : []),
           createElement('button', {
             className: 'meow-explorer-chip',
+            title: t('explorer.graph.clusters'),
+            'data-active': showClusters ? 'true' : 'false',
+            onClick: () => setShowClusters((v) => !v),
+          }, t('explorer.graph.clusters')),
+          createElement('button', {
+            className: 'meow-explorer-chip',
             title: t('explorer.graph.labels'),
             'data-active': showAllLabels ? 'true' : 'false',
             onClick: () => setShowAllLabels((v) => !v),
@@ -1927,6 +2005,7 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
                     },
                     onBackgroundDoubleClick: () => setFocusRoot(null),
                     showAllLabels,
+                    showClusters,
                   }),
         ),
         createElement('div', { className: 'meow-explorer-legend' },

@@ -524,7 +524,7 @@ export const ME_ALIAS_CAP = 6
 
 // 中文自报：名字叫/名叫/名字是/姓名是/称呼我（为）/叫我/我的名字是 + 2–4 个汉字，
 // 且捕获后不能紧跟汉字（否则长句「叫我相信未来会更好」会吞进半截词）。
-const ZH_NAME_RE = /(?:我的名字是|名字叫|名叫|名字是|姓名是|称呼我为|称呼我|叫我)([一-鿿]{2,4})(?![一-鿿])/g
+const ZH_NAME_RE = /(?:我的名字是|名字叫|名叫|名字是|姓名是|用户姓名[:：]?|姓名[:：]|称呼我为|称呼我|叫我)([一-鿿]{2,4})(?![一-鿿])/g
 // 英文自报：my name is / name is / call me / i'm / i am + 拉丁名（贪心吃最多 4 个词，
 // 再剥掉小写开头的尾巴词——「bob and i like」→「bob」，「Chen Jianguo」两个大写词保留）。
 const EN_NAME_RE = /(?:my name is|name is|call me|i'm|i am)\s+([A-Za-z][A-Za-z'-]*(?: [A-Za-z][A-Za-z'-]*){0,3})/gi
@@ -785,7 +785,15 @@ export function computeGraphLayout(
     const n = nodeById.get(id)
     return n?.kind === 'entity' && n.entityType === 'person'
   }
-  const edgeList = edges.map((e) => {
+  // 「我→属性」不参与布局拉力（否则所有属性被拉到中心外一圈）；只在渲染时按需出现
+  const layoutEdges = edges.filter((e) => {
+    if (e.kind !== 'relation') return true
+    const rootEdge = e.source === pinToCenter || e.target === pinToCenter
+    if (!rootEdge) return true
+    const other = e.source === pinToCenter ? e.target : e.source
+    return isPerson(other)
+  })
+  const edgeList = layoutEdges.map((e) => {
     let mech = EDGE_MECHANICS[e.kind] ?? EDGE_MECHANICS.cooc
     if (e.kind === 'relation') {
       const aRoot = e.source === pinToCenter
@@ -810,6 +818,11 @@ export function computeGraphLayout(
   })
   const pad = 26
   const repulse = 5200
+  // 同社区弱引力：人物+自己的属性、同类型属性会自然聚成小团
+  const communityOf = new Map<string, string>()
+  for (const g of graphCommunities(graph, pinToCenter)) {
+    for (const n of g.nodes) communityOf.set(n.id, g.id)
+  }
   for (let iter = 0; iter < iterations; iter++) {
     const temp = 1 - iter / iterations // 冷却：步长随轮次收缩
     const disp = new Map<string, GraphPoint>()
@@ -868,10 +881,124 @@ export function computeGraphLayout(
       p.x = Math.min(Math.max(nx, pad), width - pad)
       p.y = Math.min(Math.max(ny, pad), height - pad)
     }
+    // 社区向心（很弱）：只在冷却阶段也保留一点，避免团被斥力冲散
+    if (communityOf.size > 0) {
+      const sum = new Map<string, { x: number; y: number; n: number }>()
+      for (const node of nodes) {
+        if (node.id === pinToCenter) continue
+        const key = communityOf.get(node.id)
+        if (key === undefined) continue
+        const p = pos.get(node.id)!
+        const s0 = sum.get(key) ?? { x: 0, y: 0, n: 0 }
+        s0.x += p.x; s0.y += p.y; s0.n++
+        sum.set(key, s0)
+      }
+      const pull = 0.05 * temp
+      for (const node of nodes) {
+        if (node.id === pinToCenter) continue
+        const key = communityOf.get(node.id)
+        if (key === undefined) continue
+        const s0 = sum.get(key)
+        if (s0 === undefined || s0.n === 0) continue
+        const p = pos.get(node.id)!
+        p.x += (s0.x / s0.n - p.x) * pull
+        p.y += (s0.y / s0.n - p.y) * pull
+        p.x = Math.min(Math.max(p.x, pad), width - pad)
+        p.y = Math.min(Math.max(p.y, pad), height - pad)
+      }
+    }
   }
   return pos
 }
 
+
+
+export interface GraphCommunity {
+  id: string
+  label: string
+  color: string
+  nodes: GraphNode[]
+}
+
+/**
+ * 社区分组：人物自成一组，非人物实体优先归到「边权最大的人物」，否则按实体类型分组。
+ * 只用于布局引力和簇域，不改数据。
+ */
+export function graphCommunities(graph: MemoryGraph, rootId?: string): GraphCommunity[] {
+  const root = (rootId === undefined ? undefined : graph.nodes.find((n) => n.id === rootId))
+    ?? graph.nodes.find((n) => n.kind === 'entity' && (n.label === '我' || n.label === 'Me'))
+  const nodeById = new Map(graph.nodes.map((n) => [n.id, n]))
+  const isPerson = (id: string): boolean => {
+    const n = nodeById.get(id)
+    return n?.kind === 'entity' && n.entityType === 'person'
+  }
+  const personRows = new Map<string, Set<string>>()
+  for (const n of graph.nodes) {
+    if (isPerson(n.id) && n.id !== root?.id && n.rowIds !== undefined) personRows.set(n.id, new Set(n.rowIds))
+  }
+  // 每条记忆里出现过哪些人物：只有「这条记忆里唯一的人物」才能收编属性
+  const memoryPeople = new Map<string, Set<string>>()
+  for (const [pid, rows] of personRows) {
+    for (const mid of rows) {
+      if (!memoryPeople.has(mid)) memoryPeople.set(mid, new Set())
+      memoryPeople.get(mid)!.add(pid)
+    }
+  }
+  const bestPerson = new Map<string, { id: string; weight: number }>()
+  for (const e of graph.edges) {
+    const aP = isPerson(e.source) && e.source !== root?.id
+    const bP = isPerson(e.target) && e.target !== root?.id
+    if (aP && !bP && e.target !== root?.id) {
+      const cur = bestPerson.get(e.target)
+      if (cur === undefined || e.weight > cur.weight) bestPerson.set(e.target, { id: e.source, weight: e.weight })
+    }
+    if (bP && !aP && e.source !== root?.id) {
+      const cur = bestPerson.get(e.source)
+      if (cur === undefined || e.weight > cur.weight) bestPerson.set(e.source, { id: e.target, weight: e.weight })
+    }
+  }
+  // 共同来源记忆：只有「该记忆里唯一的人物」且占多数，才收编；否则交给显式边/类型
+  for (const node of graph.nodes) {
+    if (node.id === root?.id || isPerson(node.id) || node.rowIds === undefined || node.rowIds.length === 0) continue
+    const total = node.rowIds.length
+    let bestId: string | null = null
+    let bestExclusive = 0
+    for (const pid of personRows.keys()) {
+      let exclusive = 0
+      for (const mid of node.rowIds) {
+        const people = memoryPeople.get(mid)
+        if (people !== undefined && people.size === 1 && people.has(pid)) exclusive++
+      }
+      if (exclusive > bestExclusive) { bestExclusive = exclusive; bestId = pid }
+    }
+    if (bestId !== null && bestExclusive >= 1 && bestExclusive / total >= 0.6) {
+      bestPerson.set(node.id, { id: bestId, weight: 100 + bestExclusive })
+    }
+  }
+  const groups = new Map<string, GraphCommunity>()
+  const add = (key: string, label: string, color: string, node: GraphNode): void => {
+    if (!groups.has(key)) groups.set(key, { id: key, label, color, nodes: [] })
+    groups.get(key)!.nodes.push(node)
+  }
+  for (const node of graph.nodes) {
+    if (node.id === root?.id) continue
+    if (isPerson(node.id)) {
+      add(`person:${node.id}`, node.label, CATEGORY_COLORS[nodeCategory(node)], node)
+      continue
+    }
+    const owner = bestPerson.get(node.id)
+    if (owner !== undefined) {
+      const p = nodeById.get(owner.id)
+      if (p !== undefined) {
+        add(`person:${p.id}`, p.label, CATEGORY_COLORS[nodeCategory(p)], node)
+        continue
+      }
+    }
+    const type = node.kind === 'entity' ? (node.entityType ?? 'other') : node.kind
+    add(`type:${type}`, categoryLabel(nodeCategory(node)), CATEGORY_COLORS[nodeCategory(node)], node)
+  }
+  return [...groups.values()].filter((g) => g.nodes.length > 0)
+}
 
 // ── 星系布局：我=恒星，人=行星，属性=卫星 ─────────────────────────────────────
 
