@@ -740,9 +740,11 @@ export function apply(ctx: any): () => void {
       },
       makeDelegateVanishDock(refreshSubagents),
     )))
-    // 个人记忆库展示面板（sidebar.footer.action 槽：宽侧栏行/收起态图标钮 +
-    // createPortal 全屏面板；三标签：记忆管理/关系网/设置——设置标签页的 scope
-    // 在面板内双腿软取；host API 路由缺席时面板出错误态，槽本身不受影响）。
+    // 个人记忆库展示面板（v0.4.4：sidebar.panellist 顶栏行 + main 槽中心列
+    // 面板，与「插件」「自动化任务」同级；老宿主回落 sidebar.footer.action
+    // 左下入口 + createPortal 全屏面板——五标签：总览/时间线/记忆管理/关系网/
+    // 设置，设置标签页的 scope 在面板内双腿软取；host API 路由缺席时面板出
+    // 错误态，槽本身不受影响）。
     try {
       disposers.push(startMemoryExplorer(ctx, slots))
     } catch (e) {

@@ -115,6 +115,18 @@ const EXPLORER_CSS = `
   box-shadow: 0 18px 60px rgba(0,0,0,.5);
   overflow: hidden;
 }
+/* 主列嵌入形态（v0.4.4：sidebar.panellist 顶栏入口 + main 槽在中心列渲染）：
+   复用 sheet 的全部内部排版，只去掉浮层的定宽高/圆角/阴影/边框，撑满宿主
+   中心列（.centerCol 是 overflow:hidden 的 flex 列，height:100% 生效）。 */
+.meow-explorer-sheet[data-embed="true"] {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
 .meow-explorer-head {
   display: flex;
   align-items: center;
@@ -1340,9 +1352,14 @@ interface EntityPayload {
   llmReady: boolean
 }
 
-interface PanelProps { onClose: () => void }
+interface PanelProps {
+  onClose: () => void
+  /** 主列嵌入形态（v0.4.4）：由 main 槽渲染在宿主中心列——无背板、无关闭
+   *  按钮、Escape 不关闭（切走面板由宿主侧栏/新会话负责）。 */
+  embedded?: boolean
+}
 
-function MemoryExplorerPanel({ onClose }: PanelProps) {
+function MemoryExplorerPanel({ onClose, embedded = false }: PanelProps) {
   const [stats, setStats] = useState<ExplorerStats | null>(null)
   // rows = 管理标签页的工作集（随层级过滤/分页变化）；allRows = 全量缓存，
   // 总览/时间线/关系网/体检的数据源——两者分离，管理页的层级过滤不再污染其它
@@ -1433,7 +1450,7 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
     void load('', 0)
     void loadAll()
     const unsubscribeLocale = onUiLocaleChange(() => setLocaleTick((v) => v + 1))
-    const onKeyDown = (e: KeyboardEvent): void => { if (e.key === 'Escape') onClose() }
+    const onKeyDown = (e: KeyboardEvent): void => { if (e.key === 'Escape' && !embedded) onClose() }
     window.addEventListener('keydown', onKeyDown)
     return () => {
       unsubscribeLocale()
@@ -1857,17 +1874,16 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
   // inset:0、z-index:9990）为根——sheet 自身没有定位，直接挂 body 会被画在
   // 应用末尾、视口之外，用户看到的就是「点击没反应」（v0.2.0 实测回归）。
   // 背板点击关闭；sheet 内点击 stopPropagation 防止穿透关闭。
-  return createElement('div', {
-    className: 'meow-explorer-overlay',
-    onClick: onClose,
+  // v0.4.4：embedded=true 时本组件由 main 槽渲染在宿主中心列——无 portal、
+  // 无背板，sheet 直作根节点并经 [data-embed] 撑满列高（见 EXPLORER_CSS）。
+  const sheet = createElement('div', {
+    className: 'meow-explorer-sheet',
+    'data-embed': embedded ? 'true' : undefined,
+    role: embedded ? undefined : 'dialog',
+    'aria-label': embedded ? undefined : t('explorer.title'),
+    onClick: (e: { stopPropagation: () => void }) => e.stopPropagation(),
   },
-    createElement('div', {
-      className: 'meow-explorer-sheet',
-      role: 'dialog',
-      'aria-label': t('explorer.title'),
-      onClick: (e: { stopPropagation: () => void }) => e.stopPropagation(),
-    },
-      // 头部：标题 + 总数 + 存储位置 + 刷新/关闭
+      // 头部：标题 + 总数 + 存储位置 + 刷新（浮层形态另有「关闭」按钮）
       createElement('div', { className: 'meow-explorer-head' },
         createElement('h2', null, t('explorer.title')),
         stats !== null && createElement('span', { className: 'meow-explorer-total' },
@@ -1876,7 +1892,7 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
           className: 'meow-explorer-home', title: `${t('explorer.home')}: ${stats.homeDir}`,
         }, `${t('explorer.home')}: ${stats.homeDir}`),
         createElement('button', { className: 'meow-explorer-btn', onClick: () => { void reload() } }, t('explorer.refresh')),
-        createElement('button', { className: 'meow-explorer-btn', onClick: onClose }, t('explorer.close')),
+        !embedded && createElement('button', { className: 'meow-explorer-btn', onClick: onClose }, t('explorer.close')),
       ),
       // 标签页栏：总览 / 时间线 / 记忆管理 / 关系网 / 设置
       createElement('div', { className: 'meow-explorer-tabs', role: 'tablist' },
@@ -2142,11 +2158,43 @@ function MemoryExplorerPanel({ onClose }: PanelProps) {
         onClose: () => setDrawerEdge(null),
         onOpenInManage: openInManage,
       }),
-    ),
+    )
+  // 嵌入形态直返 sheet（宿主中心列就是它的定位容器）；浮层形态包背板。
+  return embedded ? sheet : createElement('div', {
+    className: 'meow-explorer-overlay',
+    onClick: onClose,
+  }, sheet)
+}
+
+// ── 入口（sidebar.panellist / main 槽组件 + 老宿主 footer 兜底）──────────────
+
+/** 侧栏顶栏图标（sidebar.panellist 槽组件）：宿主自绘行按钮/选中态，本组件只
+ *  画图标——owner props 的 size 由宿主按宽窄栏给定（宽 16 / 窄 18），颜色随
+ *  currentColor 继承侧栏行样式（同宿主 ui-plugin-manager 的 PluginsPanelIcon）。 */
+interface PanelIconProps { size?: number }
+
+export function MemoryPanelIcon({ size }: PanelIconProps) {
+  return createElement('svg', {
+    width: size ?? 18,
+    height: size ?? 18,
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: 'currentColor',
+    'stroke-width': 2,
+    'stroke-linecap': 'round',
+    'stroke-linejoin': 'round',
+    'aria-hidden': 'true',
+  },
+    // 与 BOOK_SVG 同一枚书本图形（viewBox 0 0 24 24）
+    createElement('path', { d: 'M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20' }),
   )
 }
 
-// ── 入口（sidebar.footer.action 槽组件）──────────────────────────────────────
+/** 中心列面板（main 槽组件）：MemoryExplorerPanel 的嵌入形态——宿主中心列
+ *  是它的定位容器，切走面板由宿主侧栏行/新会话负责，无 onClose 语义。 */
+export function MemoryPanelPage() {
+  return createElement(MemoryExplorerPanel, { onClose: () => {}, embedded: true })
+}
 
 interface EntryProps { wide?: boolean }
 
@@ -2170,13 +2218,19 @@ export function MemoryExplorerEntry({ wide }: EntryProps) {
 
 /**
  * 启动记忆库面板：注入面板 CSS（同 startDreamIconManager 的卫生模式：先清旧
- * style 再注入，data-plugin 自报家门防 0.1.6 加载器连坐删除）+ 注册
- * sidebar.footer.action 槽 + 双腿软取设置 scope（面板「设置」标签页的数据源）。
- * 槽服务缺席时返回 no-op 并告警（老宿主只降级）。
+ * style 再注入，data-plugin 自报家门防 0.1.6 加载器连坐删除）+ 注册顶栏入口
+ * （v0.4.4：sidebar.panellist 行 + main 槽中心列面板，与「插件」「自动化任务」
+ * 同级；order 20 排在两者之后）+ 双腿软取设置 scope（面板「设置」标签页的
+ * 数据源）。槽服务缺席时返回 no-op 并告警（老宿主只降级）。
+ *
+ * 老宿主兜底：sidebar.footer.action 槽（0.1.x 宿主的左下入口 + 浮层面板）保留
+ * ——panellist 工厂一旦运行（说明宿主是新版）立即撤掉 footer 注册，避免新旧
+ * 两份入口并存；footer 先于 panellist 物化的时序也覆盖（panellistLive 标记）。
  */
 export function startMemoryExplorer(ctx: { get?: (name: string) => unknown }, slots: { inject?: unknown; register?: unknown } | undefined | null): () => void {
   const inject = typeof slots?.inject === 'function' ? (slots as { inject: (a: string, b: () => unknown) => () => void }).inject.bind(slots) : undefined
-  if (inject === undefined) {
+  const register = typeof slots?.register === 'function' ? (slots as { register: (a: Record<string, unknown>, b: unknown) => () => void }).register.bind(slots) : undefined
+  if (inject === undefined || register === undefined) {
     console.warn('[dsh-personal-memory] slots service unavailable; memory explorer entry disabled')
     return () => {}
   }
@@ -2193,20 +2247,54 @@ export function startMemoryExplorer(ctx: { get?: (name: string) => unknown }, sl
   style.dataset.plugin = 'dsh-personal-memory'
   style.textContent = EXPLORER_CSS
   document.head.appendChild(style)
-  const disposeSlot = inject('sidebar.footer.action', () => (slots as { register: (a: Record<string, unknown>, b: unknown) => () => void }).register(
-    {
-      name: 'sidebar.footer.action',
-      id: 'dsh-personal-memory',
-      order: 80,
-      label: () => t('explorer.open'),
-    },
-    MemoryExplorerEntry,
+  // 顶栏行 id 与 main 面板 key 必须一致：侧栏行点击走宿主 selectPanel(id)，
+  // main 槽没有对应 key 的注册时宿主会抛错（ui-layout hasMainPanel 门禁）。
+  const PANEL_ID = 'dsh-personal-memory'
+  let panellistLive = false
+  let removeFooterEntry: (() => void) | null = null
+  const disposePanellistSlot = inject('sidebar.panellist', () => {
+    panellistLive = true
+    const dispose = register(
+      {
+        name: 'sidebar.panellist',
+        id: PANEL_ID,
+        order: 20,
+        // 宿主宽栏显示文字、窄栏只显示图标（label thunk 每次投影重读，随语言切换）
+        label: () => t('explorer.title'),
+      },
+      MemoryPanelIcon,
+    )
+    // 宿主是新版：撤掉可能已注册的 footer 兜底入口，避免双入口
+    removeFooterEntry?.()
+    removeFooterEntry = null
+    return dispose
+  })
+  const disposeMainSlot = inject('main', () => register(
+    { name: 'main', key: PANEL_ID },
+    MemoryPanelPage,
   ))
+  const disposeFooterSlot = inject('sidebar.footer.action', () => {
+    // 新宿主上顶栏入口已就位，footer 不再注册（工厂返回 no-op 注销器）
+    if (panellistLive) return () => {}
+    const dispose = register(
+      {
+        name: 'sidebar.footer.action',
+        id: PANEL_ID,
+        order: 80,
+        label: () => t('explorer.open'),
+      },
+      MemoryExplorerEntry,
+    )
+    removeFooterEntry = dispose
+    return dispose
+  })
   return () => {
-    try {
-      disposeSlot()
-    } catch {
-      /* 槽注销失败不阻塞 */
+    for (const dispose of [disposePanellistSlot, disposeMainSlot, disposeFooterSlot]) {
+      try {
+        dispose()
+      } catch {
+        /* 槽注销失败不阻塞 */
+      }
     }
     try {
       disposeScope()
