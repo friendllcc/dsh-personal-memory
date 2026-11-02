@@ -20,28 +20,28 @@ mytrashbin/
 /_scan-sensitive.cjs
 
 # 一次性诊断/冒烟脚本（保留 check-lang.mjs：npm test 链使用）
-/smoke.mjs
-/verify-client.mjs
-/scripts/diag-*.mjs
-/scripts/locate-load.mjs
-/scripts/mtime-check.mjs
-/scripts/hash-check.mjs
-/scripts/stat-lib.mjs
-/scripts/inspect-client.mjs
-/scripts/inspect-db.mjs
-/scripts/patch-client-banner.mjs
-/scripts/check-fixes.mjs
-/scripts/verify-client.mjs
-/scripts/link-workspace.ps1
+# /smoke.mjs
+# /verify-client.mjs
+# /scripts/diag-*.mjs
+# /scripts/locate-load.mjs
+# /scripts/mtime-check.mjs
+# /scripts/hash-check.mjs
+# /scripts/stat-lib.mjs
+# /scripts/inspect-client.mjs
+# /scripts/inspect-db.mjs
+# /scripts/patch-client-banner.mjs
+# /scripts/check-fixes.mjs
+# /scripts/verify-client.mjs
+# /scripts/link-workspace.ps1
 
 # —— 如果决定不保留测试套件，取消下面整段注释 ——
-/test.mjs
-/tests/
+# /test.mjs
+# /tests/
 # 实体图谱的纯函数测试随源码保留（其余测试仍按上面的约定忽略）
-!/tests/
-/tests/*
-!/tests/retrieval.mjs
-!/tests/entities-llm.mjs
+# !/tests/
+# /tests/*
+# !/tests/retrieval.mjs
+# !/tests/entities-llm.mjs
 
 
 # 本地预览图（不发布）
