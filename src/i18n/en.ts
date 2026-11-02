@@ -205,6 +205,8 @@ export const en: Record<UiKey, string> = {
   'explorer.graph.hops.all': 'All',
   'explorer.graph.backToMe': 'Back to "Me"',
   'explorer.graph.unlinked': 'Unlinked',
+  'explorer.graph.allNodes': 'All nodes',
+  'explorer.graph.allNodesHint': 'Only significant nodes (≥2 memories or ≥2 links) by default; turn on to show all',
   'explorer.graph.clusters': 'Clusters',
   'explorer.graph.labels': 'Labels',
   'explorer.graph.resetView': 'Reset view',

@@ -20,7 +20,7 @@ const modUrl = 'data:text/javascript;base64,' + Buffer.from(code).toString('base
 const {
   buildGraph, buildPersonalGraph, computeGraphLayout, filterRows, formatWhen, cardTitle, cardSnippet,
   rowProjects, rowProjectLabel, levelLabel, levelHasProject, nodeDominantLevel, rowsForNode,
-  nodeCategory, categoryLabel, nodeDepths, filterGraphByDepth, sortRows, topKeywords,
+  nodeCategory, categoryLabel, nodeDepths, filterGraphByDepth, sortRows, topKeywords, filterGraphBySalience,
   hygieneRows, timelineGroups, collectMeAliases, foldGraphAliases, rowsForEdge, isPersonNameLabel,
   graphInputRows, isOrgLabel, classifyPersonDomain, extractRelationLabel,
   buildRelationsGraph, sectorLayout,
@@ -487,6 +487,53 @@ check('edge mechanics: 项目簇比共现对更紧（p1-k1 距离 < k1-k2 距离
     const d = (a, b) => { const pa = mechLayout.get(a); const pb = mechLayout.get(b); return Math.hypot(pa.x - pb.x, pa.y - pb.y).toFixed(1) }
     return `proj=${d('prj:p1', 'kw:k1')} cooc=${d('kw:k1', 'kw:k2')}`
   })())
+
+// ── v0.4.5 filterGraphBySalience：显著度过滤（默认视图折叠单记忆卫星节点）────
+const entNode = (id, label, count) => ({ id, label, kind: 'entity', count, levels: {}, rowIds: [] })
+const salGraph = {
+  nodes: [
+    entNode('ent:me', '我', 5),
+    entNode('ent:wife', '老婆', 3),   // count≥2 → 显著
+    entNode('ent:hosp', '协和医院', 2), // count≥2 → 显著
+    entNode('ent:size', 'M码', 1),    // 单记忆单边 → 折叠
+    entNode('ent:city', '杭州', 1),   // 单记忆但度=2 → 显著
+    entNode('ent:room', '3号楼502', 1), // 单记忆单边 → 折叠
+    entNode('ent:lonely', '老朋友', 2), // count≥2 但无边 → 保留
+  ],
+  edges: [
+    { source: 'ent:me', target: 'ent:wife', weight: 3, kind: 'relation' },
+    { source: 'ent:me', target: 'ent:hosp', weight: 2, kind: 'relation' },
+    { source: 'ent:me', target: 'ent:size', weight: 1, kind: 'cooc' },
+    { source: 'ent:wife', target: 'ent:city', weight: 1, kind: 'relation' },
+    { source: 'ent:hosp', target: 'ent:city', weight: 1, kind: 'cooc' },
+    { source: 'ent:me', target: 'ent:room', weight: 1, kind: 'cooc' },
+  ],
+}
+const sal = filterGraphBySalience(salGraph)
+check('salience: 单记忆单边节点被折叠（M码/3号楼502）',
+  !sal.nodes.some((n) => n.id === 'ent:size' || n.id === 'ent:room'),
+  JSON.stringify(sal.nodes.map((n) => n.label)))
+check('salience: count≥2 / 度≥2 / 我 全保留',
+  ['ent:me', 'ent:wife', 'ent:hosp', 'ent:city', 'ent:lonely'].every((id) => sal.nodes.some((n) => n.id === id)),
+  JSON.stringify(sal.nodes.map((n) => n.label)))
+check('salience: 只有一端保留的边被丢弃',
+  !sal.edges.some((e) => e.source === 'ent:me' && e.target === 'ent:size')
+  && !sal.edges.some((e) => (e.source === 'ent:room' || e.target === 'ent:room')),
+  JSON.stringify(sal.edges))
+check('salience: 两端都显著的边保留',
+  sal.edges.some((e) => e.source === 'ent:me' && e.target === 'ent:wife')
+  && sal.edges.some((e) => e.source === 'ent:wife' && e.target === 'ent:city')
+  && sal.edges.some((e) => e.source === 'ent:hosp' && e.target === 'ent:city'))
+check('salience: 「我」按 label 兜底（kind=entity 也认）',
+  filterGraphBySalience({
+    nodes: [entNode('ent:me2', '我', 1), entNode('ent:x', 'X', 1)],
+    edges: [{ source: 'ent:me2', target: 'ent:x', weight: 1, kind: 'cooc' }],
+  }).nodes.some((n) => n.id === 'ent:me2'))
+check('salience: kind=me 节点永不被折',
+  filterGraphBySalience({
+    nodes: [{ id: ME_NODE_ID, label: 'me', kind: 'me', count: 1, levels: {} }],
+    edges: [],
+  }).nodes.length === 1)
 
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed > 0 ? 1 : 0)

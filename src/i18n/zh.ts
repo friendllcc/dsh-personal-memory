@@ -194,6 +194,8 @@ export const zh: Record<UiKey, string> = {
   'explorer.graph.hops.all': '全部',
   'explorer.graph.backToMe': '回到「我」',
   'explorer.graph.unlinked': '未连接',
+  'explorer.graph.allNodes': '全部节点',
+  'explorer.graph.allNodesHint': '默认只显示显著节点（≥2 条记忆或 ≥2 个连接）；开启后显示全部',
   'explorer.graph.clusters': '簇',
   'explorer.graph.labels': '标签',
   'explorer.graph.resetView': '重置视图',

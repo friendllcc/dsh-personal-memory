@@ -196,6 +196,8 @@ export const ptBr: Record<UiKey, string> = {
   'explorer.graph.hops.all': 'Tudo',
   'explorer.graph.backToMe': 'Voltar para "Eu"',
   'explorer.graph.unlinked': 'Não ligados',
+  'explorer.graph.allNodes': 'Todos os nós',
+  'explorer.graph.allNodesHint': 'Por padrão, apenas nós significativos (≥2 memórias ou ≥2 conexões); ative para mostrar todos',
   'explorer.graph.clusters': 'Grupos',
   'explorer.graph.labels': 'Rótulos',
   'explorer.graph.resetView': 'Redefinir vista',

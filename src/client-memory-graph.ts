@@ -705,6 +705,30 @@ export function filterGraphByDepth(graph: MemoryGraph, depths: ReadonlyMap<strin
 }
 
 /**
+ * 显著度过滤（v0.4.5）：默认视图只保留「显著」节点，折叠单记忆、单连接的
+ * 一次性卫星节点（「M码」「3号楼502」这类只出现在一条记忆里的细节）。
+ * 显著 = 来源记忆数（count）≥ 2，或图上连接数（度）≥ 2，或中心「我」。
+ * 纯展示层过滤，不删数据；调用方在聚焦展开（focusRoot + hops）时应跳过本
+ * 过滤——聚焦邻域里的属性节点往往正是单记忆节点，折掉就失去聚焦的意义。
+ */
+export function filterGraphBySalience(graph: MemoryGraph): MemoryGraph {
+  const degree = new Map<string, number>()
+  for (const e of graph.edges) {
+    degree.set(e.source, (degree.get(e.source) ?? 0) + 1)
+    degree.set(e.target, (degree.get(e.target) ?? 0) + 1)
+  }
+  const keep = new Set(
+    graph.nodes
+      .filter((n) => n.kind === 'me' || n.label === '我' || n.label === 'Me' || n.count >= 2 || (degree.get(n.id) ?? 0) >= 2)
+      .map((n) => n.id),
+  )
+  return {
+    nodes: graph.nodes.filter((n) => keep.has(n.id)),
+    edges: graph.edges.filter((e) => keep.has(e.source) && keep.has(e.target)),
+  }
+}
+
+/**
  * 节点 → 关联记忆行（关系网点节点后侧边抽屉的数据源）：
  * - 中心「我」→ 全部记忆；
  * - 关键词节点 → keywords 含该词（大小写不敏感）的行；

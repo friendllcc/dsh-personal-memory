@@ -185,6 +185,8 @@ export const UI_KEYS = [
   'explorer.graph.hops.all',
   'explorer.graph.backToMe',
   'explorer.graph.unlinked',
+  'explorer.graph.allNodes',
+  'explorer.graph.allNodesHint',
   'explorer.graph.clusters',
   'explorer.graph.labels',
   'explorer.graph.resetView',

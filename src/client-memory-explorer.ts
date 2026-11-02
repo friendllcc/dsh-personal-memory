@@ -38,6 +38,7 @@ import {
   computeGraphLayout,
   EXPLORER_LEVELS,
   filterGraphByDepth,
+  filterGraphBySalience,
   filterRows,
   graphCommunities,
   formatWhen,
@@ -1390,6 +1391,8 @@ function MemoryExplorerPanel({ onClose, embedded = false }: PanelProps) {
   const [focusRoot, setFocusRoot] = useState<string | null>(null)
   const [showAllLabels, setShowAllLabels] = useState(true)
   const [showClusters, setShowClusters] = useState(true)
+  /** v0.4.5 显著度过滤：默认关（=只显示显著节点）；true=显示全部（含单记忆卫星节点）。 */
+  const [showMinorNodes, setShowMinorNodes] = useState(false)
   const [hiddenCats, setHiddenCats] = useState<ReadonlySet<GraphCategory>>(() => new Set())
   const [viewResetSeq, setViewResetSeq] = useState(0)
   // 实体图谱（LLM 抽取结果；只在手动重建 / dream 收尾更新）
@@ -1656,8 +1659,14 @@ function MemoryExplorerPanel({ onClose, embedded = false }: PanelProps) {
 
   const graph = useMemo(() => {
     let g = fullGraph
-    if (focusRoot !== null && hops > 0 && g.nodes.some((n) => n.id === focusRoot)) {
+    const focusing = focusRoot !== null && hops > 0 && g.nodes.some((n) => n.id === focusRoot)
+    if (focusing) {
       g = filterGraphByDepth(g, nodeDepths(g, focusRoot), hops)
+    }
+    // 显著度过滤只在非聚焦视图生效：聚焦展开的邻域里，属性节点往往正是单记忆
+    // 节点（老大的学校、体检的医院），折掉它们聚焦就失去意义了。
+    if (!showMinorNodes && !focusing) {
+      g = filterGraphBySalience(g)
     }
     if (hiddenCats.size > 0) {
       const kept = new Set(g.nodes.filter((n) => !hiddenCats.has(nodeCategory(n))).map((n) => n.id))
@@ -1667,7 +1676,7 @@ function MemoryExplorerPanel({ onClose, embedded = false }: PanelProps) {
       }
     }
     return g
-  }, [fullGraph, hops, focusRoot, hiddenCats])
+  }, [fullGraph, hops, focusRoot, hiddenCats, showMinorNodes])
   // 图例只列「当前子图里出现的分类 ∪ 被手动关掉但全图里还有的分类」（后者要能点回来）
   const legendCats = useMemo(() => {
     const present = new Set<GraphCategory>()
@@ -1970,6 +1979,12 @@ function MemoryExplorerPanel({ onClose, embedded = false }: PanelProps) {
                 onClick: () => setHops(h),
               }, t(h === 1 ? 'explorer.graph.hops.one' : h === 2 ? 'explorer.graph.hops.two' : 'explorer.graph.hops.all')))
             : []),
+          createElement('button', {
+            className: 'meow-explorer-chip',
+            title: t('explorer.graph.allNodesHint'),
+            'data-active': showMinorNodes ? 'true' : 'false',
+            onClick: () => setShowMinorNodes((v) => !v),
+          }, t('explorer.graph.allNodes')),
           createElement('button', {
             className: 'meow-explorer-chip',
             title: t('explorer.graph.clusters'),

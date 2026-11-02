@@ -38,6 +38,11 @@ export interface Extraction { entities: ExtractedEntity[]; relations: ExtractedR
 
 export type CallLLM = (messages: unknown[], options?: Record<string, unknown>) => Promise<string>
 
+/** 抽取时随用户消息附带的已有实体名单上限（links 靠前优先；防变体分裂）。 */
+const ENTITY_LIST_LIMIT = 80
+/** 名单段落标记（用户消息里「正文」与「名单」的分界；测试也用它切内容）。 */
+const ENTITY_LIST_MARKER = '\n\n已有实体名单（新实体与名单中某项指同一事物时，必须复用名单里的确切写法）：\n'
+
 const ZH_PROMPT = `你是个人记忆的实体抽取器。从一条记忆里抽取「关于这个人」的实体和它们之间的关系。
 
 只输出严格 JSON，不要解释、不要 markdown：
@@ -53,6 +58,8 @@ const ZH_PROMPT = `你是个人记忆的实体抽取器。从一条记忆里抽�
 - 不要抽：代码符号、文件路径、配置键、工具/API 名、日期时间、动作短语、泛称（用户/公司/医生/其他品牌/平台客服）。
 - 如果这条记忆讲的是**代码、文件格式、配置、工具/API 实现、会话文件、调试过程、插件/系统内部机制**，它不属于个人生活知识：直接返回 {"entities":[],"relations":[]}。
 - 同一事物的不同写法合并成一个规范名（例如 妻子/太太→老婆，协和→协和医院，健康检查→体检）。
+- 用户消息末尾附有「已有实体名单」（当前库里的实体规范名）：新抽的实体如果与名单中某项指同一事物，必须复用名单里的确切写法，不要另建变体。
+- 地点用稳定的大粒度名称（如「杭州」；除非记忆需要区分同城多个地点才用更细地名）；尺码、门牌/房间号、编号、金额这类一次性细节不抽。
 - 关系方向：from 是主体，to 是客体；不确定就用 related_to。
 - 关系尽量落到具体的人：某个人的属性/事件/物品（老婆的生日、老大的学校、老二的大熊猫之旅）用那个人做 from；只有本人自己的属性/事件才用「我」。
 - 中文名称原样输出，不翻译、不罗马化。
@@ -73,6 +80,8 @@ Rules:
 - Do NOT extract code identifiers, file paths, config keys, tool/API names, dates, times, verb phrases, or generic references (the user/company/doctor/other brands).
 - If the memory is about code, file formats, configs, tool/API internals, session files, debugging, or plugin/system internals, it is NOT personal-life knowledge: return {"entities":[],"relations":[]}.
 - Merge obvious variants of the same thing into one canonical name (wife/spouse -> wife, 协和 -> 协和医院).
+- The user message ends with a list of existing entities (canonical names already in the library): if a new entity refers to the same thing as a list item, you MUST reuse the list's exact spelling instead of creating a variant.
+- Use stable, coarse-grained place names (e.g. "杭州"; a finer place only when the memory needs to distinguish several places in the same city); do not extract one-off details like clothing sizes, room/door numbers, IDs, or amounts.
 - Relations: from is the subject, to is the object; use related_to when unsure.
 - Attach relations to the specific person when possible: a person's attribute/event/item (wife's birthday, eldest's school, second child's panda trip) should use that person as "from"; only the owner's own attributes/events use "我".
 - Keep original language; do not translate.
@@ -162,9 +171,14 @@ export async function extractMemoryEntities(
 
   let text = ''
   try {
+    // 已有实体名单（v0.4.5）：抽取时把库里规范名一并喂给模型，跨记忆复用写法，
+    // 防止「北京协和医院/协和医院」式变体各自成点。名单随重建批次逐步长出来
+    // （清空重建时首批为空，越抽越全）。只附名字，与孤立实体修复的清单同款。
+    const existing = db.entityGraph(ENTITY_LIST_LIMIT).nodes.map((n) => n.name)
+    const userText = existing.length > 0 ? `${content}${ENTITY_LIST_MARKER}${existing.join('\n')}` : content
     text = await callLLM([
       { role: 'system', content: systemPrompt() },
-      { role: 'user', content: [{ type: 'text', text: content }] },
+      { role: 'user', content: [{ type: 'text', text: userText }] },
     ])
   } catch (e) {
     logger?.warn?.(`[jt-pa] 实体抽取调用失败：${e instanceof Error ? e.message : String(e)}`)

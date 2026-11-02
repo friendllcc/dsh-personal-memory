@@ -168,8 +168,9 @@ section('5. 批量抽取结束后自动补孤立实体')
         ? JSON.stringify({ relations: [{ to: '乙', type: 'related_to' }] })
         : JSON.stringify({ relations: [] })
     }
-    const userText = messages[1].content[0].text
-    const name = userText.includes('甲') ? '甲' : '乙'
+    // v0.4.5：抽取的用户消息在正文后附「已有实体名单」，判内容要先把名单切掉
+    const content = String(messages[1].content[0].text).split('\n\n已有实体名单')[0]
+    const name = content.includes('甲') ? '甲' : '乙'
     return JSON.stringify({ entities: [{ name, type: 'person' }], relations: [] })
   }
   const r = await E.extractPendingEntities(db, call, { limit: 10 })
@@ -177,6 +178,33 @@ section('5. 批量抽取结束后自动补孤立实体')
   ok('自动补出 1 条关系', r.repaired === 1, JSON.stringify(r))
   const g = db.entityGraph()
   ok('自动补完没有孤立实体', db.isolatedEntities().length === 0, JSON.stringify(g.edges))
+  db.close()
+}
+
+section('6. 抽取附已有实体名单（跨记忆复用规范名）')
+{
+  const db = new D.MemoryDb(join(dir, 'list.db'))
+  const r1 = db.insert({ level: 'fact', content: '老婆生日是 5 月 20 日' })
+  const seen = []
+  const call1 = async (messages) => {
+    seen.push(String(messages[1].content[0].text))
+    return JSON.stringify({ entities: [{ name: '老婆', type: 'person' }], relations: [] })
+  }
+  await E.extractMemoryEntities(db, r1.id, call1)
+  ok('空库抽取不带名单', !seen[0].includes('已有实体名单'), seen[0])
+
+  const r2 = db.insert({ level: 'fact', content: '妻子爱吃海鲜' })
+  const call2 = async (messages) => {
+    seen.push(String(messages[1].content[0].text))
+    // 模拟模型遵守新规则：复用名单里的规范写法「老婆」而不是另建「妻子」
+    return JSON.stringify({ entities: [{ name: '老婆', type: 'person' }], relations: [] })
+  }
+  await E.extractMemoryEntities(db, r2.id, call2)
+  ok('非空库抽取附带名单', seen[1].includes('已有实体名单') && seen[1].includes('老婆'), seen[1])
+  ok('名单附在正文之后（正文完整保留）', seen[1].startsWith('妻子爱吃海鲜'), seen[1])
+  ok('复用规范名不新建变体', db.entityStats().entities === 1, JSON.stringify(db.entityStats()))
+  const g = db.entityGraph()
+  ok('「老婆」链接两条记忆', g.nodes.length === 1 && g.nodes[0].rowIds.length === 2, JSON.stringify(g.nodes))
   db.close()
 }
 
