@@ -74,7 +74,7 @@ export const UI_KEYS = [
   'settings.field.homeDir.label',
   'settings.field.homeDir.hint',
   'settings.field.homeDir.preset.default',
-  'settings.field.homeDir.preset.dshStorage',
+  'settings.field.homeDir.preset.userHome',
   'settings.field.homeDir.preset.pluginRoot',
   'settings.field.homeDir.preset.custom',
   'settings.mirrorReadonly',

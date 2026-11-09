@@ -59,7 +59,7 @@ try {
   check(
     'homeDirPresets 深填且含三预设',
     typeof empty.value?.homeDirPresets?.default === 'string'
-      && typeof empty.value?.homeDirPresets?.['dsh-storage'] === 'string'
+      && typeof empty.value?.homeDirPresets?.['user-home'] === 'string'
       && typeof empty.value?.homeDirPresets?.['plugin-root'] === 'string',
     `homeDirPresets=${JSON.stringify(empty.value?.homeDirPresets)}`,
   )

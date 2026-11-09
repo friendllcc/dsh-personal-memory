@@ -214,8 +214,9 @@ const config = z.object({
   /** 记忆目录（相对工作区）。 */
   projectDir: z.string().default('.dsh-personal-memory'),
   /** 全局目录（实例级数据家：日志/window-index/prompts 覆盖层/migrate 状态）。
-   *  'default'=平台用户主目录 | 'dsh-storage'=<DSH home>/storages/dsh-personal-memory |
-   *  'plugin-root'=<插件根>/storage | 绝对路径=自定义。''/缺省=默认。
+   *  'default'=<DSH home>/storages/dsh-personal-memory（v0.4.5 起出厂默认）|
+   *  'user-home'=平台用户主目录（旧默认）| 'plugin-root'=<插件根>/storage |
+   *  绝对路径=自定义。''/缺省=默认。'dsh-storage' 历史标记与 default 同落点。
    *  变更即自动迁移旧目录内容（同盘移动/跨盘复制，旧目录绝不自动删）。 */
   homeDir: z.string().required(false),
   /** homeDirPresets（只读 meta，非配置）：三个全局目录预设的实际落点，设置页
@@ -442,7 +443,7 @@ export function mergeConfigLayer(patch: unknown, user: Record<string, unknown> |
 interface ResolvedConfig {
   enabled: boolean
   projectDir: string
-  /** 原样透传（'default'|'dsh-storage'|'plugin-root'|绝对路径|undefined）；绝对路径化在 resolveHomeDir。 */
+  /** 原样透传（'default'|'user-home'|'plugin-root'|'dsh-storage' 历史标记|绝对路径|undefined）；绝对路径化在 resolveHomeDir。 */
   homeDir: string | undefined
   hitTopK: number
   titleMax: number
@@ -2443,6 +2444,6 @@ export { buildHitInjection, buildInjection, buildReinjection, buildProjectSectio
 export { buildReflectMessage, consecutiveToolSteps, scanTurn } from './reflect.js'
 export { tokenize, stemEn, search, findSimilar, topicDrift, recencyWeight } from './bm25.js'
 export { fillTemplate, keyedValue, resolveSlotText, setPromptLang, getPromptLang, DEFAULT_LANG, SLOTS } from './prompt-loader.js'
-export { DEFAULT_HOME_DIR, activeHomeDir, setActiveHomeDir, dshHomeDir, pluginRootDir, homeDirPresets, resolveHomeDir, switchHomeDir, type HomeDirSwitch } from './home-dir.js'
+export { DEFAULT_HOME_DIR, LEGACY_HOME_DIR, activeHomeDir, setActiveHomeDir, dshHomeDir, pluginRootDir, homeDirPresets, resolveHomeDir, switchHomeDir, type HomeDirSwitch } from './home-dir.js'
 export { setMemoryToolGate, registerMemoryTools } from './tools.js'
 export { collectDreamRounds, buildDreamMessage, windowNeedsDream, DREAM_MARKER, noteActivity, hourInTimeZone, minutesInTimeZone, isDreamSuppressed, startWindowDream, resumeAndDream, advanceDream, abortDream, recoverInterruptedDream, handleMemoryTurnFailure, dreamSweepTick, dreamCommandDefinition, isSubagentAgent, dreamSweepOnce, type DreamConfig } from './dream.js'

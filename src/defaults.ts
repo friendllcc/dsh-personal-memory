@@ -28,8 +28,8 @@ export const CONFIG_DEFAULTS = {
   reflect: true,
   reflectTurns: 7,
   autoMigrate: true,
-  /** 全局目录选择：''=默认（平台用户主目录）；预设标记或绝对路径见 home-dir.ts。
-   *  恢复默认写入 ''（而非删字段）=回落平台默认目录。 */
+  /** 全局目录选择：''=默认（DSH 根目录 Storage，v0.4.5 起）；预设标记或绝对路径见 home-dir.ts。
+   *  恢复默认写入 ''（而非删字段）=回落 DSH 根目录 Storage。 */
   homeDir: '',
   dream: {
     enabled: true,

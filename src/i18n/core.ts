@@ -94,7 +94,7 @@ const listeners = new Set<(locale: UiLocale) => void>()
 
 // ── locale 服务晚到重试（issue #32/#33）──────────────────────────────────────
 // 冷启动时序：client apply 可能跑在宿主 locale 服务之前——installI18n 首次探测拿不到
-// 服务，走一次性回退（browserLocale 定格）且原实现永不纠正 → 冷启动后 UI 整会话卡
+// 服务，走一次性回退（定格默认中文）且原实现永不纠正 → 冷启动后 UI 整会话卡
 // 英文（#32 桌面端实测，#33 重复报告）。
 // 修复区分两种「没服务」（红线不动：locale 绝不进 inject——写进去会让插件在无 locale
 // 的老宿主/受限动态包上整体挂起，v0.28.0 设计决策）：
@@ -161,20 +161,7 @@ function match(tag: string): UiLocale | null {
   return byPrimary !== undefined ? byPrimary.id : null
 }
 
-/** 浏览器语言（navigator.languages → navigator.language）里第一个支持的语言。 */
-function browserLocale(): UiLocale | null {
-  if (typeof navigator === 'undefined') return null
-  const listed: string[] = []
-  if (Array.isArray(navigator.languages)) {
-    for (const tag of navigator.languages) if (typeof tag === 'string') listed.push(tag)
-  }
-  if (typeof navigator.language === 'string') listed.push(navigator.language)
-  for (const tag of listed) {
-    const hit = match(tag)
-    if (hit !== null) return hit
-  }
-  return null
-}
+/** 浏览器语言已不再用于降级判定（v0.4.5：无服务一律定格默认中文）。 */
 
 /** 无服务时的静态查表：语言 → fallback 链 → en → 键名。 */
 function staticTranslate(locale: UiLocale, key: UiKey, params?: Readonly<Record<string, string | number>>): string {
@@ -212,9 +199,10 @@ function fill(template: string, params?: Readonly<Record<string, string | number
 export function installI18n(ctx: LocaleHostContext, warn: (message: string) => void = (m) => console.warn(m)): string[] {
   const svc = typeof ctx?.get === 'function' ? (ctx.get('locale') as LocaleServiceLike | null | undefined) : null
   if (svc === null || svc === undefined || typeof svc.getLocale !== 'function' || typeof svc.register !== 'function') {
-    // 老宿主 / 动态包：没有 locale 服务，走浏览器判定 + 静态查表。
+    // 老宿主 / 动态包：没有 locale 服务，定格默认中文（v0.4.5 用户拍板：默认语言中文，
+    // 不再按浏览器语言猜——浏览器猜中英文机时 UI 英文，与默认中文的预期相反）。
     service = null
-    active = browserLocale() ?? DEFAULT_LOCALE
+    active = DEFAULT_LOCALE
     notify()
     // issue #32：两种「没服务」分流——ctx 有 get 能力（服务只是晚到，冷启动竞态）
     // → 有界轮询重入；ctx 连 get 都没有（v0.28.0 决策的永久回退场景）→ 不重试。

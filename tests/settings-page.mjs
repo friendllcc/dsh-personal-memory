@@ -247,7 +247,7 @@ function makeFormStub() {
 
 
 // ── 5. 全局目录控件（homeDir）：预设 radio + 实际路径显示 + 自定义输入 ──────────
-// 收集树里的 radio（type/checked），按渲染序=default/dsh-storage/plugin-root/custom。
+// 收集树里的 radio（type/checked），按渲染序=default/user-home/plugin-root/custom。
 function collectRadios(node, out = []) {
   if (node === null || node === undefined || typeof node !== 'object') return out
   const props = node.props ?? {}
@@ -275,8 +275,8 @@ function renderWithHomeDir(snapshotValue, base) {
 
 const PRESETS_BASE = {
   homeDirPresets: {
-    default: String.raw`C:\Users\meow\.dsh-personal-memory`,
-    'dsh-storage': String.raw`C:\dsh\storages\dsh-personal-memory`,
+    default: String.raw`C:\dsh\storages\dsh-personal-memory`,
+    'user-home': String.raw`C:\Users\meow\.dsh-personal-memory`,
     'plugin-root': String.raw`C:\plugins\dsh-personal-memory\storage`,
   },
 }
@@ -290,7 +290,7 @@ settings.setUiLocaleForTest('zh')
   const radios = collectRadios(tree)
   check('homeDir: 渲染四个 radio', radios.length === 4, String(radios.length))
   check('homeDir: 缺省=default 选中', radios[0] !== undefined && radios[0].checked === true && radios.slice(1).every((r) => !r.checked))
-  check('homeDir: 三预设显示实际落点', page.some((s) => s.includes(String.raw`C:\dsh\storages\dsh-personal-memory`)) && page.some((s) => s.includes(String.raw`C:\plugins\dsh-personal-memory\storage`)))
+  check('homeDir: 三预设显示实际落点', page.some((s) => s.includes(String.raw`C:\dsh\storages\dsh-personal-memory`)) && page.some((s) => s.includes(String.raw`C:\Users\meow\.dsh-personal-memory`)) && page.some((s) => s.includes(String.raw`C:\plugins\dsh-personal-memory\storage`)))
   check('homeDir: 自定义选项存在', page.includes('自定义路径'))
   check('homeDir: hint 带多实例提醒', page.some((s) => s.includes('多个 dsh 实例')))
   // 布局结构：每个预设的实际路径是独立次行节点（等宽小字类），不是挤在名称行里
@@ -304,10 +304,15 @@ settings.setUiLocaleForTest('zh')
   check('homeDir: 三条路径各自独立次行节点', pathNodes.length === 3, String(pathNodes.length))
 
   // 预设标记值：对应 radio 选中
-  const tree2 = renderWithHomeDir({ enabled: true, homeDir: 'dsh-storage' }, PRESETS_BASE)
+  const tree2 = renderWithHomeDir({ enabled: true, homeDir: 'user-home' }, PRESETS_BASE)
   texts(tree2)
   const radios2 = collectRadios(tree2)
   check('homeDir: 预设标记选中对应 radio', radios2[1] !== undefined && radios2[1].checked === true && !radios2[0].checked && !radios2[3].checked)
+
+  // 历史标记 'dsh-storage'（v0.4.5 前预设值）归一显示为 default 选中
+  const tree2b = renderWithHomeDir({ enabled: true, homeDir: 'dsh-storage' }, PRESETS_BASE)
+  const radios2b = collectRadios(tree2b)
+  check('homeDir: 历史标记 dsh-storage 归一为 default 选中', radios2b[0] !== undefined && radios2b[0].checked === true && radios2b.slice(1).every((r) => !r.checked))
 
   // 自定义绝对路径：custom radio 选中 + 输入框回填路径值
   const tree3 = renderWithHomeDir({ enabled: true, homeDir: String.raw`D:\data\meow` }, PRESETS_BASE)

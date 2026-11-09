@@ -5,8 +5,9 @@
  * 唯一状态口：模块级 active。全部读写方经 activeHomeDir() 动态取，**不许**再写死
  * homedir()——设置页保存（onChange）或 apply 解析配置后调 switchHomeDir() 热切换，
  * 下一笔写即落新目录，dsh 主进程不重启、插件不重载。
- * 默认=平台用户主目录（os.homedir() 跨平台：Windows=C:\Users\<u>\.dsh-personal-memory，
- * mac=/Users/<u>/.dsh-personal-memory，其余类推）。
+ * 默认 = DSH 根目录 Storage（v0.4.5 起用户拍板）：DSH_HOME/storages/dsh-personal-memory
+ * （DSH_HOME 未设回落 ~/.dsh，与宿主同款口径）。旧默认（平台用户主目录
+ * ~/.dsh-personal-memory）首次启动自动迁移，见 initialHome。
  *
  * 安全红线（用户拍板 2026-09-24）：
  * - 迁移绝不删除旧目录——跨盘复制后旧目录原样保留，提示用户确认后手动删；
@@ -18,7 +19,12 @@ import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-export const DEFAULT_HOME_DIR = join(homedir(), '.dsh-personal-memory')
+/** 旧出厂默认（v0.4.5 之前）：平台用户主目录下的 ~/.dsh-personal-memory。
+ *  仅作迁移源与 'user-home' 预设落点，不再是任何配置值的缺省解。 */
+export const LEGACY_HOME_DIR = join(homedir(), '.dsh-personal-memory')
+
+/** 出厂默认（v0.4.5 起）：DSH 根目录 Storage 下的 dsh-personal-memory。 */
+export const DEFAULT_HOME_DIR = join(dshHomeDir(), 'storages', 'dsh-personal-memory')
 
 /**
  * 环境变量兜底入口（DSH_PERSONAL_MEMORY_HOME，绝对路径）：0.1.7 设置页真机断点
@@ -33,7 +39,30 @@ function envHomeDir(): string | undefined {
   return r
 }
 
-let active = envHomeDir() ?? DEFAULT_HOME_DIR
+/** 目录有内容判定（不存在/不可读 = false）。 */
+function dirHasContent(p: string): boolean {
+  try {
+    return existsSync(p) && readdirSync(p).length > 0
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 模块加载期的初始 active（只探测，不搬不写）：
+ *  env 优先；旧默认目录有内容且新默认尚未建立 → 先落旧目录——apply() 的
+ *  switchHomeDir(新默认) 随后按既有迁移机制整树搬过去（不删源、home-dir.json 留痕）。
+ *  新默认已有内容（已迁过/用户用过 dsh-storage 预设）→ 直接用新默认，不迁移。
+ *  全新安装（两边都空）→ 新默认。
+ */
+function initialHome(): string {
+  const env = envHomeDir()
+  if (env !== undefined) return env
+  if (dirHasContent(LEGACY_HOME_DIR) && !dirHasContent(DEFAULT_HOME_DIR)) return LEGACY_HOME_DIR
+  return DEFAULT_HOME_DIR
+}
+
+let active = initialHome()
 
 /** 当前生效的全局目录（所有消费方唯一取值口）。 */
 export function activeHomeDir(): string {
@@ -45,7 +74,8 @@ export function setActiveHomeDir(dir: string): void {
   active = dir
 }
 
-/** homeDir 配置的合法形态：'default' | 'dsh-storage' | 'plugin-root' | 自定义绝对路径。 */
+/** homeDir 配置的合法形态：'default' | 'user-home' | 'plugin-root' | 自定义绝对路径
+ *  （'dsh-storage' 为历史标记，与出厂默认同落点，解析层归一）。 */
 
 /** DSH home（数据根）：migrate-v0 同款探测——env 优先，缺省回落 ~/.dsh。 */
 export function dshHomeDir(): string {
@@ -61,20 +91,21 @@ export function pluginRootDir(): string {
 export function homeDirPresets(): Record<string, string> {
   return {
     default: DEFAULT_HOME_DIR,
-    'dsh-storage': join(dshHomeDir(), 'storages', 'dsh-personal-memory'),
+    'user-home': LEGACY_HOME_DIR,
     'plugin-root': join(pluginRootDir(), 'storage'),
   }
 }
 
 /** homeDir 配置 → 绝对路径（唯一解析口）。手编 settings.yaml / 设置页 user 层都经此。
- *  优先级：显式配置（预设/自定义绝对路径）> DSH_PERSONAL_MEMORY_HOME env > 平台默认。
+ *  优先级：显式配置（预设/自定义绝对路径）> DSH_PERSONAL_MEMORY_HOME env > 出厂默认。
  *  非法自定义（空、相对路径、盘根、用户主目录本身）一律回落——迁移动作会把文件
  *  搬进目标，指向根级目录太危险，宁可不切。 */
 export function resolveHomeDir(value: unknown): string {
   if (typeof value !== 'string') return envHomeDir() ?? DEFAULT_HOME_DIR
   const v = value.trim()
   if (v === '' || v === 'default') return envHomeDir() ?? DEFAULT_HOME_DIR
-  if (v === 'dsh-storage' || v === 'plugin-root') return homeDirPresets()[v]
+  if (v === 'dsh-storage') return join(dshHomeDir(), 'storages', 'dsh-personal-memory') // 历史标记：与出厂默认同落点（动态取 DSH_HOME，与 user-home/plugin-root 同款）
+  if (v === 'user-home' || v === 'plugin-root') return homeDirPresets()[v]
   if (!isAbsolute(v)) return envHomeDir() ?? DEFAULT_HOME_DIR
   const r = resolve(v)
   if (r === dirname(r)) return envHomeDir() ?? DEFAULT_HOME_DIR // 盘根（dirname(盘根)==盘根）

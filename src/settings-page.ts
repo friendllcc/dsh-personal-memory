@@ -422,8 +422,10 @@ export function MemorySettingsSection(props: { scope: any }): any {
       const presets = (snap.base as Record<string, unknown> | undefined)?.homeDirPresets as Record<string, string> | undefined
       // 选中态只认「已保存的值」（raw/user 层）——草稿只管输入框文本，绝不钉住
       // radio（2026-09-25 闪回修复：残留草稿曾把选中态钉死在旧位置）。
-      const saved = typeof raw === 'string' && raw !== '' ? raw : 'default'
-      const isCustomSaved = saved !== 'default' && saved !== 'dsh-storage' && saved !== 'plugin-root'
+      // 'dsh-storage' 为历史标记（v0.4.5 前的预设值）：与出厂默认同落点，归一显示为 default。
+      const rawSaved = typeof raw === 'string' && raw !== '' ? raw : 'default'
+      const saved = rawSaved === 'dsh-storage' ? 'default' : rawSaved
+      const isCustomSaved = saved !== 'default' && saved !== 'user-home' && saved !== 'plugin-root'
       const draftText = typeof draft === 'string' ? draft : undefined
       const radio = (value: string, labelKey: UiKey, realPath?: string) =>
         el('label', { key: value, className: 'meowmm_set_homedir_opt' + (!isCustomSaved && saved === value ? ' meowmm_set_homedir_opt_on' : '') },
@@ -445,7 +447,7 @@ export function MemorySettingsSection(props: { scope: any }): any {
         )
       control = el('div', { className: 'meowmm_set_homedir' },
         radio('default', 'settings.field.homeDir.preset.default', presets?.default),
-        radio('dsh-storage', 'settings.field.homeDir.preset.dshStorage', presets?.['dsh-storage']),
+        radio('user-home', 'settings.field.homeDir.preset.userHome', presets?.['user-home']),
         radio('plugin-root', 'settings.field.homeDir.preset.pluginRoot', presets?.['plugin-root']),
         // 自定义行：radio 只反映「已保存的自定义路径」；输入框常驻，blur 保存
         //（空值不切换）。draft 只影响输入框文本，不碰选中态。

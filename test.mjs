@@ -74,6 +74,7 @@ import {
   sessionEventsOf,
   sweepHomeLogs,
   DEFAULT_HOME_DIR,
+  LEGACY_HOME_DIR,
   activeHomeDir,
   setActiveHomeDir,
   dshHomeDir,
@@ -2323,8 +2324,10 @@ rmSync(wsIcon, { recursive: true, force: true })
   // 的基线语义；结束时还原回沙箱值——文件开头的 env 是整场测试的 home 防弹衣）
   const savedEnvHome = process.env.DSH_PERSONAL_MEMORY_HOME
   delete process.env.DSH_PERSONAL_MEMORY_HOME
-  check('resolveHomeDir: default 标记=平台默认目录', resolveHomeDir('default') === DEFAULT_HOME_DIR)
+  check('resolveHomeDir: default 标记=出厂默认目录', resolveHomeDir('default') === DEFAULT_HOME_DIR)
   check('resolveHomeDir: 空/undefined 回落默认', resolveHomeDir('') === DEFAULT_HOME_DIR && resolveHomeDir(undefined) === DEFAULT_HOME_DIR)
+  check('resolveHomeDir: dsh-storage 历史标记归一到出厂默认', resolveHomeDir('dsh-storage') === DEFAULT_HOME_DIR)
+  check('resolveHomeDir: user-home 预设=旧默认（平台用户主目录）', resolveHomeDir('user-home') === LEGACY_HOME_DIR && homeDirPresets()['user-home'] === LEGACY_HOME_DIR)
   const savedEnv = process.env.DSH_HOME
   process.env.DSH_HOME = join(tmp, 'dshhome')
   check('resolveHomeDir: dsh-storage 预设=DSH_HOME/storages/dsh-personal-memory', resolveHomeDir('dsh-storage') === join(tmp, 'dshhome', 'storages', 'dsh-personal-memory'))
