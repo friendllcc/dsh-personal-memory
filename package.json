@@ -1,6 +1,6 @@
 {
   "name": "@cmjt/dsh-personal-memory",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "publishConfig": {
     "registry": "http://36.138.53.195:4873/"
   },

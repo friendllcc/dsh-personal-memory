@@ -1,5 +1,23 @@
 # 更新日志
 
+## [0.4.6] - 2026-11-10（待发布）
+
+### 修复：私有源 scoped 包客户端注册 ID 不一致
+
+- v0.4.5 起 npm 包名改为 `@cmjt/dsh-personal-memory`，但客户端 bundle 的
+  `__ModuleLoader__.load` 注册 ID 与包内 `cordis.patch.yml` 引用仍硬编码旧名
+  `dsh-personal-memory`，DSH Web 按 package name 等待客户端模块，导致
+  `loaded without registering "@cmjt/dsh-personal-memory"` 加载失败（后端 API 不受影响）。
+- 修复：构建时客户端注册 ID 从 `package.json.name` **派生**（build.mjs banner），
+  `cordis.patch.yml` 行改为引用 scoped 包名（scoped 名带引号）。
+- **发布门禁**：`build.mjs` 构建时校验 patch 引用与包名一致（不一致直接构建失败）；
+  `npm test`（test.mjs）对产物再验端到端——客户端注册 ID 与 package name 一致、
+  patch id/name 行引用包名。诊断脚本 verify-client / check-fixes / patch-client-banner
+  同步改为动态读包名。
+- 插件内部 cordis 插件名仍为 `dsh-personal-memory`（路由前缀 / 设置命名空间 /
+  数据目录均不变），无需数据迁移。GitHub tgz 与私有源两条发布通道的安装产物
+  均按 package name 注册，行为一致。
+
 ## [0.4.5] - 2026-11-09（待发布）
 
 ### 全局数据目录默认迁到 DSH 根目录 Storage

@@ -1,7 +1,8 @@
-# dsh-personal-memory bundle patch: inserts this plugin into a profile's layer stack.
+# @cmjt/dsh-personal-memory bundle patch: inserts this plugin into a profile's layer stack.
 # Applied when a profile lists this bundle (or copied by hand for manual
 # installs). Rows reference the package by name so Node resolution finds the
-# installed code.
+# installed code (scoped names must be quoted; build.mjs gates this file
+# against package.json name).
 - insert:
-    - id: dsh-personal-memory
-      name: 'dsh-personal-memory'
+    - id: '@cmjt/dsh-personal-memory'
+      name: '@cmjt/dsh-personal-memory'

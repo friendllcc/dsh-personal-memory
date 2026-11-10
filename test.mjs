@@ -2393,5 +2393,21 @@ rmSync(wsIcon, { recursive: true, force: true })
   rmSync(tmp, { recursive: true, force: true })
 }
 
+// ── 发布门禁：客户端模块注册 ID / cordis.patch 引用 与 package name 一致（v0.4.6）──
+// DSH ClientModuleSystem 按 "Entry name == package name" 等待 __ModuleLoader__.load
+// 注册（BootModuleRow.id）——npm 包名改 scoped 后 banner/patch 未同步即加载失败
+// （issue：loaded without registering "@cmjt/dsh-personal-memory"）。npm test 先
+// build（build.mjs 的同款校验已把住 patch），这里对产物再验一遍端到端。
+{
+  const pkgName = JSON.parse(readFileSync('package.json', 'utf8')).name
+  const cli = readFileSync('lib/client.js', 'utf8')
+  check('gate: 客户端注册 ID = package name', cli.includes(`id: ${JSON.stringify(pkgName)}`), `pkg=${pkgName}`)
+  check('gate: 注册 ID 只声明一次', (cli.match(/window\.__ModuleLoader__\.load\(\{/g) ?? []).length === 1)
+  const patchYml = readFileSync('cordis.patch.yml', 'utf8')
+  const esc = pkgName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  check('gate: cordis.patch id 行引用包名', new RegExp(`^\\s*-?\\s*id:\\s*['"]?${esc}['"]?\\s*$`, 'm').test(patchYml))
+  check('gate: cordis.patch name 行引用包名', new RegExp(`^\\s*name:\\s*['"]?${esc}['"]?\\s*$`, 'm').test(patchYml))
+}
+
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed > 0 ? 1 : 0)

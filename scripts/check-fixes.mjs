@@ -6,6 +6,7 @@ console.log('has bad ctx.agents?.get:', idx.includes('ctx.agents?.get'))
 console.log('has claimDream:', idx.includes('claimDream'))
 console.log('has claimCheckGate:', idx.includes('claimCheckGate'))
 const cli = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+const pkgName = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).name
 console.log('client.js len:', cli.length)
-console.log('client id quoted:', cli.includes('id: "dsh-personal-memory"'))
+console.log('client id quoted:', cli.includes(`id: ${JSON.stringify(pkgName)}`))
 console.log('client ModuleLoader load:', cli.includes('window.__ModuleLoader__.load({'))

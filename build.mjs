@@ -13,10 +13,19 @@
  * client side (shell singleton, ModuleLoader resolves it).
  */
 import { build, context } from 'esbuild';
-import { cpSync } from 'node:fs';
+import { cpSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const watch = process.argv.includes('--watch');
+
+// 客户端模块注册 ID 必须等于 package name（DSH ClientModuleSystem 按
+// "Entry name == package name" 等待 __ModuleLoader__.load 的注册，见
+// packages/client/modules manifest.ts 的 BootModuleRow.id 注释）。v0.4.6 起
+// npm 包名改为 scoped（@cmjt/dsh-personal-memory），ID 从 package.json 派生，
+// 不再硬编码——改包名后忘改 banner 会报
+// "loaded without registering <pkg> via __ModuleLoader__.load"。
+const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
+const MODULE_ID = pkg.name;
 
 // The @deepseek-ai/* packages live in the dsh-meow pnpm workspace, not in this
 // package's node_modules. `node_modules/@deepseek-ai` holds junction mirrors
@@ -50,7 +59,7 @@ const clientOptions = {
   banner: {
     js: [
       'window.__ModuleLoader__.load({',
-      '  id: "dsh-personal-memory",',
+      `  id: ${JSON.stringify(MODULE_ID)},`,
       '  factory: (require) => {',
       '    var module = { exports: {} };',
       '    var exports = module.exports;',
@@ -78,6 +87,18 @@ if (watch) {
   const keepInPackage = (p) => {
     const name = p.split(/[\\/]/).pop() ?? ''
     return !name.startsWith('Delete_') && !/\.bak(-|$)/.test(name)
+  }
+  // 发布门禁（v0.4.6，issue：客户端注册 ID 与 scoped 包名不一致）：shipped 的
+  // cordis.patch.yml 行按包名引用安装产物（Node 解析）——包名改 scope 后忘了同步
+  // patch 会导致 scoped 安装加载旧引用。banner 已派生自 package.json（必然一致），
+  // 这里校验 patch 文件 id/name 两行引用同为本包名（引号可选，scoped 名必须加），
+  // 不一致直接构建失败。
+  const esc = MODULE_ID.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const idLine = new RegExp(`^\\s*-?\\s*id:\\s*['"]?${esc}['"]?\\s*$`, 'm')
+  const nameLine = new RegExp(`^\\s*name:\\s*['"]?${esc}['"]?\\s*$`, 'm')
+  const patchYml = readFileSync(new URL('./cordis.patch.yml', import.meta.url), 'utf8');
+  if (!idLine.test(patchYml) || !nameLine.test(patchYml)) {
+    throw new Error(`[build] cordis.patch.yml 的 id/name 行必须引用包名 ${MODULE_ID}（与 package.json name 一致）`)
   }
   cpSync(new URL('./src/prompts', import.meta.url), new URL('./lib/prompts', import.meta.url), {
     recursive: true,

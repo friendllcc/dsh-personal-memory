@@ -12,7 +12,7 @@ const raw = readFileSync(outfile, 'utf8')
 
 const banner = [
   'window.__ModuleLoader__.load({',
-  '  id: "dsh-personal-memory",',
+  `  id: ${JSON.stringify(JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).name)},`,
   '  factory: (require) => {',
   '    var module = { exports: {} };',
   '    var exports = module.exports;',
