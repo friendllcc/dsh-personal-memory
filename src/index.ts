@@ -727,10 +727,12 @@ const SETTINGS_SOURCE_WAIT_MS = 250
 // ⚠️ 接线坑（#26 报告人 v1 实机踩坑）：settingsGet 本身是个函数（()=>scope.get()），
 // 外层必须再包一层 thunk 捕获 applyInner 作用域里那个稍后才赋值的 let——把函数本体
 // 当源传进去，引用恒定 → 缓存永不失效 → 单测全绿而实机仍按启动默认值跑。
-// 注册期消费的字段（projectDir/homeDir/enabled/delegate.modelSpec + setPromptLang 的
+// 注册期消费的字段（projectDir/homeDir/delegate.modelSpec + setPromptLang 的
 // 启动调用）保持冻结：热改需要 dispose+重入，设置页按「需重载」语义对待（#26 同口径）。
+// enabled 总开关 v0.4.8 起热化（热改不重入注册，但全部运行入口按活值封口，见
+// preStepInject / turn-stopping / setMemoryToolGate / scheduleDream 的总开关闸）。
 
-const LIVE_CONFIG_KEYS = ['hitTopK', 'titleMax', 'reflect', 'reflectTurns', 'autoMigrate', 'promptLang', 'disabledWorkspaces'] as const
+const LIVE_CONFIG_KEYS = ['enabled', 'hitTopK', 'titleMax', 'reflect', 'reflectTurns', 'autoMigrate', 'promptLang', 'disabledWorkspaces'] as const
 const LIVE_DREAM_KEYS = ['enabled', 'idleMinutes', 'suppressWindows', 'suppressLeadMinutes', 'checkMinutes', 'timeZone', 'rulesReviewDays'] as const
 /** v0.4.2：semantic 全字段热化——设置页开关/端点/模型/参数保存后下一轮对话即生效。 */
 const LIVE_SEMANTIC_KEYS = ['enabled', 'recall', 'baseUrl', 'apiKey', 'model', 'topK', 'minScore'] as const
@@ -1268,14 +1270,19 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
   // 写档的整理轮豁免 = isPluginTurn（dream/reflect 指令轮的标记，本文件事件链维护）。
   setMemoryToolGate({
     refuseRead: (ws, sid) => {
+      // 总开关闸（v0.4.8）置顶，整理轮（插件自身轮次）豁免——飞行中的 dream/反思
+      // 轮要能读完收尾，否则关开关的瞬间正在跑的整理轮会以 error 中断。
+      if (sid !== null && isPluginTurn.get(sid) === true) return null
+      if (!resolved.enabled) return '个人记忆插件已停用（总开关关闭）：memory 工具不可用，请到设置页开启总开关。'
       if (workspaceDisabled(ws)) return '记忆对该工作区已停用（disabledWorkspaces 名单）：memory 工具不可用，请更换工作区或调整配置。'
       if (sid === null || !existsSync(memoryDbPath(ws, resolved.projectDir))) return null
       return getDb(ws, resolved.projectDir).getMemoryScope(sid).inject ? '此窗口已停止读入记忆（记忆参与开关）：注入与检索均已关闭。' : null
     },
     refuseWrite: (ws, sid) => {
+      if (sid !== null && isPluginTurn.get(sid) === true) return null // 整理轮豁免：整理轮写入跟随整理档（#38 联动）
+      if (!resolved.enabled) return '个人记忆插件已停用（总开关关闭）：写入被拒绝，请到设置页开启总开关。'
       if (workspaceDisabled(ws)) return '记忆对该工作区已停用（disabledWorkspaces 名单）：写入被拒绝。'
       if (sid === null || !existsSync(memoryDbPath(ws, resolved.projectDir))) return null
-      if (isPluginTurn.get(sid) === true) return null // 整理轮豁免：整理轮写入跟随整理档（#38 联动）
       return getDb(ws, resolved.projectDir).getMemoryScope(sid).write ? '此窗口已停止写入记忆（记忆参与开关）。' : null
     },
   })
@@ -1536,6 +1543,9 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
     // （如 dsh-femo 的角色上下文）。注意不能只看 parentSession——GUI fork/续写的
     // 主会话也有 parentSession（真机踩坑 2026-08-17：fca10feb 被误判为子代理导致注入全失效）。
     if (agent.session.header.origin === 'subagent') return decision
+    // 总开关闸（v0.4.8，enabled 活字段）：设置页关掉总开关后下一轮注入即停——
+    // 0.1.7 宿主写配置只落盘从不重载 entry，不在此封口的话快照/命中/重注入照发。
+    if (!resolved.enabled) return decision
     registerLiveAgent(agent)
     const sid = sessionIdOfAgent(agent)
     const ws = workspaceOfAgent(agent)
@@ -1768,6 +1778,9 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
         /* 门控读失败：放行（fail-open 同风格） */
       }
     }
+    // 总开关闸（v0.4.8）：飞行中的 dream 轮在上方分支已正常收尾（不半途弃单），
+    // 但不再发起新的反思轮——关总开关后「注入、反思、记忆工具全部停用」。
+    if (!resolved.enabled) return
     if (!resolved.reflect) return
     const ws = workspaceOfAgent(agent)
     if (!ws) return
@@ -1829,7 +1842,16 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
   }
 
   // 3) 空闲整理（按窗口；windowIndex 记录 sessionId → workspace）。
-  const stopDream = scheduleDream(ctx, resolved.dream, resolved.projectDir, windowIndex, signalDreamState, workspaceDisabled)
+  //    dream 配置视图再包一层总开关（v0.4.8）：enabled getter = dream.enabled ∧ 总开关
+  //    ——关总开关后空闲整理调度一并停（scheduleDream 捕获的是本视图，活性保留）。
+  const dreamSchedulingView = {} as DreamConfig
+  for (const key of LIVE_DREAM_KEYS) {
+    Object.defineProperty(dreamSchedulingView, key, {
+      configurable: true, enumerable: true,
+      get: () => (key === 'enabled' ? resolved.enabled && resolved.dream.enabled : resolved.dream[key]),
+    })
+  }
+  const stopDream = scheduleDream(ctx, dreamSchedulingView, resolved.projectDir, windowIndex, signalDreamState, workspaceDisabled)
   ctx.logger.info(
     `dsh-personal-memory: dream scheduled (idle ${resolved.dream.idleMinutes}m, suppress ${resolved.dream.suppressWindows.map((w) => `${w.start}-${w.end}`).join(' ')} lead ${resolved.dream.suppressLeadMinutes}m, every ${resolved.dream.checkMinutes}m, tz ${resolved.dream.timeZone}, rules review ${resolved.dream.rulesReviewDays}d)`,
   )
@@ -2246,7 +2268,7 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
       | undefined
     if (commands !== undefined && typeof commands.register === 'function') {
       try {
-        commandDisposers.push(ctx.effect(() => commands.register(dreamCommandDefinition(ctx, resolved.projectDir, signalDreamState, () => resolved.dream.rulesReviewDays, workspaceDisabled))))
+        commandDisposers.push(ctx.effect(() => commands.register(dreamCommandDefinition(ctx, resolved.projectDir, signalDreamState, () => resolved.dream.rulesReviewDays, workspaceDisabled, () => resolved.enabled))))
         ctx.logger.info('dsh-personal-memory: /dream user command registered')
       } catch (e) {
         ctx.logger.warn(`dsh-personal-memory: /dream 命令注册失败: ${e instanceof Error ? e.message : String(e)}`)

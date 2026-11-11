@@ -76,7 +76,7 @@ export const ptBr: Record<UiKey, string> = {
   'settings.group.language': 'Idioma',
   'settings.group.storage': 'Diretórios e migração',
   'settings.field.enabled.label': 'Chave geral',
-  'settings.field.enabled.hint': 'Desligado, a injeção, a reflexão e as ferramentas de memória ficam todas inativas',
+  'settings.field.enabled.hint': 'Desligado, a injeção, a reflexão, as ferramentas de memória e a consolidação ficam inativas (vale ao salvar)',
   'settings.field.projectDir.label': 'Diretório de memória',
   'settings.field.projectDir.hint': 'Diretório de dados, relativo ao workspace',
   'settings.field.homeDir.label': 'Diretório global de dados',

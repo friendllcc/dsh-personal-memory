@@ -555,13 +555,17 @@ export interface DreamCommandDefinition {
  * command-error 明确提示未启动原因，不会把 /dream 发给模型）。
  * 注册由 index.ts 负责（ctx.get('commands') 可选服务 + 就绪重试 + ctx.effect 清理）。
  */
-export function dreamCommandDefinition(ctx: Context, dir = '.dsh-personal-memory', onDreamState?: DreamStateCallback, rulesReviewDays: number | (() => number) = DEFAULT_RULES_REVIEW_DAYS, workspaceDisabled?: (ws: string) => boolean): DreamCommandDefinition {
+export function dreamCommandDefinition(ctx: Context, dir = '.dsh-personal-memory', onDreamState?: DreamStateCallback, rulesReviewDays: number | (() => number) = DEFAULT_RULES_REVIEW_DAYS, workspaceDisabled?: (ws: string) => boolean, pluginEnabled?: () => boolean): DreamCommandDefinition {
   return {
     name: 'dream',
     description: '手动唤起一次记忆整理（dream）：逐轮回顾本窗口建立/提取过的跨会话记忆并封存。与 memory_dream 工具相同，手动触发不受峰时抑制。',
     handler(invocation) {
       const agent = invocation?.agent
       if (!agent) return { kind: 'error', text: '/dream 无法确定当前窗口的会话。' }
+      // 总开关闸（v0.4.8）：关总开关=插件功能完全停用，手动 /dream 一并拒绝。
+      if (pluginEnabled !== undefined && !pluginEnabled()) {
+        return { kind: 'error', text: '个人记忆插件已停用（总开关关闭）：/dream 不可用，请到设置页开启总开关。' }
+      }
       const header = agent.session?.header
       if (header?.origin === 'subagent') {
         return { kind: 'error', text: '/dream 只能在主会话使用：子代理没有独立的记忆窗口。' }

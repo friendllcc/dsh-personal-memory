@@ -51,7 +51,7 @@ export const zh: Record<UiKey, string> = {
   // ── 设置页 ────────────────────────────────────────────────────────────────
   'settings.title': '设置',
   'settings.summary':
-    '跨会话记忆插件的全部设置。改动保存在 DSH 设置里（字段级，「恢复默认」= 回到插件出厂默认，不受 patch 装配基线影响）；热字段（命中/反思/梦境/停用名单/语义检索）保存即生效，其余字段需热重载/重启 dsh-personal-memory 插件。',
+    '跨会话记忆插件的全部设置。改动保存在 DSH 设置里（字段级，「恢复默认」= 回到插件出厂默认，不受 patch 装配基线影响）；热字段（总开关/命中/反思/梦境/停用名单/语义检索）保存即生效，其余字段需热重载/重启 dsh-personal-memory 插件。',
   'settings.loading': '个人记忆配置加载中…',
   'settings.unavailable': '当前连接不支持设置写入（仅本机回环连接可编辑）。',
   'settings.readonly': '当前连接为只读（设置写入仅限本机回环连接）。',
@@ -74,7 +74,7 @@ export const zh: Record<UiKey, string> = {
   'settings.group.language': '语言',
   'settings.group.storage': '目录与迁移',
   'settings.field.enabled.label': '总开关',
-  'settings.field.enabled.hint': '关闭后注入、反思、记忆工具全部停用',
+  'settings.field.enabled.hint': '关闭后注入、反思、记忆工具、空闲整理全部停用（保存后立即生效）',
   'settings.field.projectDir.label': '记忆目录',
   'settings.field.projectDir.hint': '相对工作区的数据目录',
   'settings.field.homeDir.label': '全局数据目录',

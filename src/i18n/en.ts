@@ -85,7 +85,7 @@ export const en: Record<UiKey, string> = {
   'settings.group.language': 'Language',
   'settings.group.storage': 'Directories & migration',
   'settings.field.enabled.label': 'Master switch',
-  'settings.field.enabled.hint': 'When off, injection, reflection and the memory tools are all disabled',
+  'settings.field.enabled.hint': 'When off, injection, reflection, memory tools and idle consolidation are all disabled (takes effect on save)',
   'settings.field.projectDir.label': 'Memory directory',
   'settings.field.projectDir.hint': 'Data directory, relative to the workspace',
   'settings.field.homeDir.label': 'Global data directory',

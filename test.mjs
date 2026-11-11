@@ -2271,6 +2271,68 @@ check('issue#21 未被 user 层覆盖的字段仍走 patch（工具照常注册�
   check('scoped: 非我方 ns 写入不触发钩子分支（链路安全）', svcScoped.wrote === 'other-ns', svcScoped.wrote ?? '')
 }
 
+// ── v0.4.8 总开关热关（user 报 bug：关总开关后反思仍触发）──────────────────
+// enabled 从注册期字段改为活字段：0.1.7 宿主写配置只落盘从不重载 entry，靠注册期
+// early-return 关不住已注册的 handler。活化后全部运行入口按活值封口——翻 user 层
+// 开关（过 liveConfigReader 250ms 节流窗）即停：反思 steer / pre-step 注入 /
+// memory 工具 / 手动 /dream；翻回即恢复。
+{
+  class FakeSettingsToggle {
+    constructor() {
+      this.row = { ns: 'dsh-personal-memory', revision: 1, schema: { hitTopK: {} }, applies: 'live',
+        value: { enabled: true, hitTopK: 2 }, base: { enabled: true, hitTopK: 2 }, user: {} }
+    }
+    async write() { return 'ok' }
+    describe() { return [this.row, { ns: 'other-ns', revision: 1, value: { x: 1 }, base: {}, user: {} }] }
+  }
+  const svcT = new FakeSettingsToggle()
+  const wsT = mkdtempSync(join(tmpdir(), 'mm-toggle-'))
+  const toolsT = []
+  const handlersT = {}
+  const ctxT = {
+    logger: { info: () => {}, warn: () => {}, error: console.error },
+    tools: { register: (t) => toolsT.push(t) },
+    on: (name, fn) => { handlersT[name] = fn },
+    effect: () => () => {},
+    get: (n) => (n === 'settings' ? svcT : undefined),
+    inject: (_deps, cb) => { queueMicrotask(() => { try { cb({ settings: svcT, effect: () => () => {} }) } catch { /* cordis 静默吞 */ } }) },
+  }
+  await apply(ctxT, { enabled: true, projectDir: '.dsh-personal-memory', promptLang: 'zh' })
+  await new Promise((r) => setTimeout(r, 300)) // 等 inject 回调 + describe 壳回填 settingsGet
+
+  const sevenT = [events.turnStart(), events.userMsg('干活'), ...Array.from({ length: 7 }, () => events.assistantWithTool('bash'))]
+  const steerOf = (sid) => { const out = []; handlersT['agent/turn-stopping']({ agent: { session: { header: { cwd: wsT, id: sid }, events: sevenT }, steer: (m) => out.push(m) }, turn: 1, signal: new AbortController().signal }); return out }
+  check('toggle: 开关开着时反思照发（基线）', steerOf('s-tog-on').length === 1, '')
+
+  // 关总开关（user 层 enabled=false → describe 壳现场合并 value 亦 false）
+  svcT.row.user = { enabled: false }
+  await new Promise((r) => setTimeout(r, 400)) // 过 liveConfigReader 节流窗
+  check('toggle: 关总开关后反思不再发（本 bug 的直接断言）', steerOf('s-tog-off').length === 0, '')
+
+  // pre-step 注入停
+  const preT = handlersT['agent/pre-step']
+  const decisionOff = await preT(
+    { agent: { session: { header: { cwd: wsT, id: 's-tog-off' }, events: [] } }, messages: [{ content: [{ type: 'text', text: '你好' }], source: { kind: 'user' } }], turn: 2, step: 1, signal: new AbortController().signal },
+    async () => ({ kind: 'enter', messages: [{ content: [{ type: 'text', text: '你好' }], source: { kind: 'user' } }] }),
+  )
+  check('toggle: 关总开关后 pre-step 不注入', decisionOff.messages.length === 1, String(decisionOff.messages.length))
+
+  // memory 工具拒（读路径）
+  const searchT = toolsT.find((t) => t.name === 'memory_search')
+  const toolErr = await searchT.execute({ query: 'x' }, { agent: { session: { header: { id: 's-tog-off', cwd: wsT } } } }).then(() => null, (e) => e)
+  check('toggle: 关总开关后 memory 工具拒绝', toolErr !== null && String(toolErr.message).includes('总开关'), toolErr?.message ?? '(no error)')
+
+  // 手动 /dream 拒（pluginEnabled 闸）
+  const defT = dreamCommandDefinition({ logger: { info: () => {}, warn: () => {}, error: () => {} } }, '.dsh-personal-memory', undefined, 2, undefined, () => false)
+  const rT = defT.handler({ agent: { session: { header: { cwd: wsT, id: 's-dream-t' } } } })
+  check('toggle: 关总开关后 /dream 拒绝', rT.kind === 'error' && rT.text.includes('总开关'), JSON.stringify(rT))
+
+  // 翻回开 → 反思恢复
+  svcT.row.user = {}
+  await new Promise((r) => setTimeout(r, 400))
+  check('toggle: 重新开启后反思恢复', steerOf('s-tog-on2').length === 1, '')
+}
+
 // disabled
 const { ctx: ctxOff, tools: toolsOff, handlers: handlersOff } = makeCtx()
 await apply(ctxOff, { enabled: false })
