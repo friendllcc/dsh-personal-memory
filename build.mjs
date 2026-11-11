@@ -61,6 +61,9 @@ const clientOptions = {
       'window.__ModuleLoader__.load({',
       `  id: ${JSON.stringify(MODULE_ID)},`,
       '  factory: (require) => {',
+      // 包名常量（v0.4.7）：settings-page 用它定位 scoped 安装的设置条目 id
+      // （= profile 条目 id = 包名）。与上面的注册 id 同源（MODULE_ID），单点维护。
+      `    var __DPM_PACKAGE_NAME__ = ${JSON.stringify(MODULE_ID)};`,
       '    var module = { exports: {} };',
       '    var exports = module.exports;',
     ].join('\n'),

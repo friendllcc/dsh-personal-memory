@@ -1,5 +1,27 @@
 # 更新日志
 
+## [0.4.7] - 2026-11-11（待发布）
+
+### 修复：scoped 安装后设置面板读不到配置
+
+- v0.4.6 起 npm 包名为 `@cmjt/dsh-personal-memory`，宿主设置域的条目 id
+  （= profile 条目 id = patch insert 行 id）随之变为 scoped 名，但插件两侧
+  （客户端 `configForms.get` / 宿主 describe 壳与 write 门禁）仍硬编码旧名
+  `dsh-personal-memory`，设置标签页读不到配置（后端 API 不受影响）。
+- 修复 = **运行时发现真实条目 id**，两种安装通道都能命中：
+  - 宿主侧：describe 行扫描——value/base/user/schema 含 `hitTopK`（本插件
+    Config 独有字段）的行即本插件，命中即缓存条目 id；describe 值合并、
+    `homeDirPresets` 注入、设置源读取、write 热切换门禁全部改用发现结果
+    （旧名兜底保留，老 mock/异常行不受影响）。
+  - 客户端侧：候选列表 = [包名（build.mjs banner 注入 `__DPM_PACKAGE_NAME__`，
+    与客户端模块注册 id 同源）、旧名]，从 `configForms.describe()` 镜像读
+    「已服务命名空间」列表，命中者才 `get()`；镜像形态意外（无 describe）的
+    宿主退回旧行为盲取旧名。写入失败探针同步改为按候选发现。
+- 0.1.6 老宿主不受影响（命名空间由本插件注册，恒为旧名）。
+- 测试：`test.mjs` 新增 scoped 条目 0.1.7 壳用例（指纹命中/值重算/presets
+  注入/write 门禁）与 banner 包名常量门禁；`settings-page.mjs` 新增 banner
+  注入变体 bundle 的镜像筛选用例（scoped 命中/旧名回落/候选缺席不盲取）。
+
 ## [0.4.6] - 2026-11-10（待发布）
 
 ### 修复：私有源 scoped 包客户端注册 ID 不一致

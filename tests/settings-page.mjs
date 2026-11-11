@@ -58,6 +58,45 @@ try {
 }
 const settings = await import(modUrl)
 
+// v0.4.7 scoped 变体 bundle：banner 注入包名变量（对齐 build.mjs 真实 client 产物
+// factory 头部的 var __DPM_PACKAGE_NAME__）——用它验证 0.1.7 腿的候选筛选能命中
+// scoped 条目 id（@cmjt/dsh-personal-memory）也能回落旧名。
+let scopedSettings
+{
+  writeFileSync(
+    ENTRY,
+    [
+      "export { acquireSettingsScope, MemorySettingsSection, parseSuppressWindows, serializeSuppressWindows } from '../src/settings-page.ts'",
+      "export { setUiLocaleForTest, getUiLocale, t } from '../src/i18n/index.js'",
+    ].join('\n'),
+    'utf8',
+  )
+  try {
+    const { outputFiles } = await build({
+      entryPoints: [ENTRY],
+      bundle: true,
+      platform: 'browser',
+      format: 'esm',
+      write: false,
+      logLevel: 'silent',
+      banner: { js: 'var __DPM_PACKAGE_NAME__ = "@cmjt/dsh-personal-memory";' },
+      plugins: [
+        {
+          name: 'react-stub',
+          setup(build) {
+            build.onResolve({ filter: /^react$/ }, () => ({ path: 'react-stub', namespace: 'stub' }))
+            build.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({ contents: reactStub, loader: 'js' }))
+          },
+        },
+      ],
+    })
+    const code = new TextDecoder().decode(outputFiles[0].contents)
+    scopedSettings = await import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'))
+  } finally {
+    rmSync(ENTRY, { force: true })
+  }
+}
+
 // ── DOM 桩：CSS 注入与 render 期间的 window 访问 ─────────────────────────────
 const head = []
 globalThis.document = {
@@ -243,6 +282,51 @@ function makeFormStub() {
   disposeLeg()
   await sleep(20)
   check('dispose 后不再重复交付', delivered.length === 1, String(delivered.length))
+}
+
+// 4.5 v0.4.7 scoped 安装：镜像 served 命中 @cmjt 条目 id（包名由 banner 注入）。
+console.log('=== 4.5 scoped 安装：镜像筛选命中 @cmjt/dsh-personal-memory ===')
+{
+  /** 带镜像的 configForms 桩（0.1.7 ConfigForms 形状：get + describe→mirror face）。 */
+  const mirrorForms = (servedNs) => {
+    const getCalls = []
+    return {
+      getCalls,
+      configForms: {
+        get: (id) => { getCalls.push(id); return makeFormStub() },
+        describe: () => ({
+          getSnapshot: () => ({ status: 'ready', view: { namespaces: servedNs.map((ns) => ({ ns, revision: 1 })) } }),
+          subscribe: () => () => {},
+          ensure: () => Promise.resolve(),
+        }),
+      },
+    }
+  }
+  const a = mirrorForms(['@cmjt/dsh-personal-memory', 'ui-settings-general'])
+  const deliveredA = []
+  const d1 = scopedSettings.acquireSettingsScope(ctxWithGet({ configForms: a.configForms }), (scope) => deliveredA.push(scope))
+  check('scoped: 取 @cmjt 表单', a.getCalls.length === 1 && a.getCalls[0] === '@cmjt/dsh-personal-memory', JSON.stringify(a.getCalls))
+  check('scoped: 交付 scope', deliveredA.length === 1, String(deliveredA.length))
+  d1()
+
+  // 4.6 同一 scoped 包在旧 link/tgz 环境：served 只有旧名 → 命中旧名（回归保护）。
+  const b = mirrorForms(['dsh-personal-memory', 'ui-settings-general'])
+  const deliveredB = []
+  const d2 = scopedSettings.acquireSettingsScope(ctxWithGet({ configForms: b.configForms }), (scope) => deliveredB.push(scope))
+  check('scoped 包下旧环境: 取旧名表单', b.getCalls.length === 1 && b.getCalls[0] === 'dsh-personal-memory', JSON.stringify(b.getCalls))
+  d2()
+
+  // 4.7 候选都不在场：不交付、不盲取，轮询放弃亮不可用。
+  {
+    const c = mirrorForms(['ui-settings-general'])
+    const deliveredC = []
+    let unavailable = 0
+    const d3 = scopedSettings.acquireSettingsScope(ctxWithGet({ configForms: c.configForms }), (scope) => deliveredC.push(scope), { pollMs: 5, maxPollAttempts: 2, onUnavailable: () => { unavailable += 1 } })
+    check('候选缺席不盲取表单', deliveredC.length === 0 && c.getCalls.length === 0, JSON.stringify(c.getCalls))
+    await sleep(40)
+    check('候选缺席轮询放弃亮不可用', unavailable === 1 && deliveredC.length === 0, `${unavailable}/${deliveredC.length}`)
+    d3()
+  }
 }
 
 

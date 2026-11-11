@@ -29,6 +29,22 @@ import { factoryDefaultOf } from './defaults.js'
 import { getUiLocale, onUiLocaleChange, t, UI_KEYS, type UiKey } from './i18n/index.js'
 
 const SETTINGS_NS = 'dsh-personal-memory'
+
+/** 本插件 npm 包名（v0.4.7 起 scoped：@cmjt/dsh-personal-memory）。build.mjs 注入
+ *  进 client bundle 头部（banner var，与客户端模块注册 id 同源）；测试 bundle 未
+ *  注入时回落旧名。scoped 私有源安装的宿主设置条目 id（= profile 条目 id）与包名
+ *  同名，旧 link/tgz 安装的条目 id 仍是旧名——两条安装通道见 SETTINGS_NS_CANDIDATES。 */
+declare const __DPM_PACKAGE_NAME__: string | undefined
+const PACKAGE_NAME: string = typeof __DPM_PACKAGE_NAME__ !== 'undefined' ? __DPM_PACKAGE_NAME__ : 'dsh-personal-memory'
+
+/** 0.1.7 腿按「已服务命名空间」筛选的候选：包名（scoped 条目 id）优先，旧名兜底——
+ *  两种安装环境各自只有一个在场，命中谁就是谁。 */
+const SETTINGS_NS_CANDIDATES: readonly string[] = PACKAGE_NAME === SETTINGS_NS ? [SETTINGS_NS] : [PACKAGE_NAME, SETTINGS_NS]
+
+/** 实际交付的设置条目 id（0.1.6 腿=旧名=本插件注册名；0.1.7 腿=命中的候选；
+ *  probeMutationRejection 与写入探针用）。 */
+let resolvedSettingsNs: string | null = null
+
 const CSS_ID = 'dsh-personal-memory-settings-css'
 
 const CSS = `
@@ -665,7 +681,9 @@ export async function probeMutationRejection(field: string, value: unknown): Pro
     // typert 信封形状：{ok, value:{namespaces,...}}（configForms 同款读法 response.value）——
     // 直读 .namespaces 恒 undefined=假阴性（2026-09-25 首版探针的坑）。
     const view = (describe as any)?.ok === true ? (describe as any).value : describe
-    const ns = view?.namespaces?.find((row: any) => row?.ns === 'dsh-personal-memory')
+    // 条目 id 发现（v0.4.7）：scoped 安装的行 ns=包名，旧安装=旧名；候选命中谁用谁。
+    const ns = view?.namespaces?.find((row: any) => SETTINGS_NS_CANDIDATES.includes(row?.ns))
+      ?? (resolvedSettingsNs !== null ? { ns: resolvedSettingsNs } : undefined)
     console.info('[dsh-personal-memory] probe describe:', JSON.stringify({
       ok: (describe as any)?.ok,
       nsListed: ns !== undefined,
@@ -674,7 +692,8 @@ export async function probeMutationRejection(field: string, value: unknown): Pro
       writable: view?.writable,
     }))
     if (ns === undefined) return
-    const response = await remote.mutate('dsh-personal-memory', [{ op: 'set', path: [field], value }], ns.revision)
+    const nsId = (ns as any).ns as string
+    const response = await remote.mutate(nsId, [{ op: 'set', path: [field], value }], (ns as any).revision)
     console.info('[dsh-personal-memory] probe mutate envelope:', JSON.stringify(response))
     const err = (response as any)?.error as any
     if (err) {
@@ -690,7 +709,7 @@ export async function probeMutationRejection(field: string, value: unknown): Pro
       // 二分实验：mutate（逐字段 op+路径白名单）失败 → 换 update（整体 patch 合并，
       // 跳过路径校验）。若 update ok=true → 拒因锁死在 mutate 专属段，且写入已补上；
       // 若 update 仍拒 → 拒因在公共准入段（entry/schema/edit），拿 update envelope 对比。
-      const upd = await remote.update('dsh-personal-memory', { [field]: value }, ns.revision)
+      const upd = await remote.update(nsId, { [field]: value }, (ns as any).revision)
       console.info('[dsh-personal-memory] probe update envelope:', JSON.stringify(upd))
       const uerr = (upd as any)?.error as any
       if (uerr) {
@@ -751,6 +770,7 @@ export function acquireSettingsScope(ctx: any, onScope: (scope: any) => void, op
   // ── 0.1.6 腿：settingsScope 在，原样走旧链路 ──────────────────────────────
   const settingsScope = softService(ctx, 'settingsScope')
   if (settingsScope !== undefined) {
+    resolvedSettingsNs = SETTINGS_NS
     onScope(settingsScope.bind({ namespace: SETTINGS_NS }))
     return () => {}
   }
@@ -765,12 +785,48 @@ export function acquireSettingsScope(ctx: any, onScope: (scope: any) => void, op
       pollTimer = undefined
     }
   }
+  /** 读 configForms 镜像（describe face）的「已服务命名空间」集合；idle 时踢一次
+   *  ensure（首读）；形态意外（无 describe/getSnapshot）返回 undefined。 */
+  const servedNamespaces = (configForms: any): ReadonlySet<string> | undefined => {
+    try {
+      if (typeof configForms.describe !== 'function') return undefined
+      const face = configForms.describe()
+      if (face === null || face === undefined || typeof face.getSnapshot !== 'function') return undefined
+      const snap = face.getSnapshot()
+      if (snap === null || snap === undefined) return undefined
+      if (snap.status === 'idle' && typeof face.ensure === 'function') {
+        void Promise.resolve(face.ensure()).catch(() => { /* 首读失败：下轮轮询再试 */ })
+      }
+      const list = Array.isArray(snap.view?.namespaces) ? snap.view.namespaces : []
+      const served = new Set<string>()
+      for (const row of list) {
+        if (typeof row?.ns === 'string' && row.ns !== '') served.add(row.ns)
+      }
+      return served
+    } catch {
+      return undefined
+    }
+  }
   const attach = (): void => {
     if (delivered) return
     const configForms = softService(ctx, 'configForms')
     if (configForms === undefined || typeof configForms.get !== 'function') return
+    const served = servedNamespaces(configForms)
+    if (served === undefined) {
+      // 镜像形态意外（老形态宿主）：退回旧行为——按旧名盲取表单（v0.4.6 前同款）。
+      delivered = true
+      resolvedSettingsNs = SETTINGS_NS
+      onScope(configForms.get(SETTINGS_NS))
+      stopPoll()
+      return
+    }
+    // scoped 安装：条目 id=包名；旧 link/tgz 安装：旧名。命中谁取谁；都还没上桌
+    // （镜像首读未回/条目未激活）就继续轮询——上限后亮不可用，与旧语义一致。
+    const hit = SETTINGS_NS_CANDIDATES.find((ns) => served.has(ns))
+    if (hit === undefined) return
     delivered = true
-    onScope(configForms.get(SETTINGS_NS))
+    resolvedSettingsNs = hit
+    onScope(configForms.get(hit))
     stopPoll()
   }
   attach()
@@ -780,7 +836,7 @@ export function acquireSettingsScope(ctx: any, onScope: (scope: any) => void, op
       attempts += 1
       if (!delivered && attempts >= maxPollAttempts) {
         stopPoll()
-        console.info('[dsh-personal-memory] configForms 服务未就绪（设置标签页不可用；插件其余功能不受影响）')
+        console.info('[dsh-personal-memory] configForms 服务未就绪或设置条目未激活（设置标签页不可用；插件其余功能不受影响）')
         opts?.onUnavailable?.()
       }
     }, pollMs)

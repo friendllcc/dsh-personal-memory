@@ -4,6 +4,7 @@ const s = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
 console.log('len:', s.length)
 console.log('start ok:', s.startsWith('window.__ModuleLoader__.load({'))
 console.log('id quoted:', s.includes(`id: ${JSON.stringify(pkg.name)}`))
+console.log('pkg name var:', s.includes(`var __DPM_PACKAGE_NAME__ = ${JSON.stringify(pkg.name)}`))
 console.log('footer ok:', s.trimEnd().endsWith('});'))
 console.log('map ref:', s.includes('sourceMappingURL'))
 // 语法验证：用 new Function 包一层（client 是 CJS，引用 window 不能直接执行，只查语法）

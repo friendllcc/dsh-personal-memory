@@ -2234,6 +2234,43 @@ check('issue#21 未被 user 层覆盖的字段仍走 patch（工具照常注册�
     Object.getPrototypeOf(svcLegacy).__meowValueRefresh === undefined && Object.getPrototypeOf(svcLegacy).__meowWriteHook === undefined, '')
 }
 
+// ── v0.4.7 scoped 安装：设置条目 id=@cmjt/dsh-personal-memory（= 包名），壳按
+// hitTopK 字段指纹命中行，不再认硬编码旧名。describe 合并 / 设置源 / write 门禁全走发现。──
+{
+  class FakeSettingsScoped {
+    constructor(rows) { this.rows = rows; this.wrote = null }
+    async write(ns, _change, _expected) { this.wrote = ns; return 'ok' }
+    describe() { return this.rows }
+  }
+  const rowsScoped = [{
+    ns: '@cmjt/dsh-personal-memory', revision: 5, schema: { hitTopK: {} }, applies: 'live',
+    value: { enabled: true, hitTopK: 2, homeDir: 'stale-frozen-at-boot' },
+    base: { enabled: true, hitTopK: 2, homeDir: '' },
+    user: { homeDir: 'dsh-storage' },
+  }, { ns: 'other-ns', revision: 1, value: { x: 1 }, base: {}, user: {} }]
+  const svcScoped = new FakeSettingsScoped(rowsScoped)
+  const ctxScoped = {
+    logger: { info: () => {}, warn: () => {}, error: console.error },
+    tools: { register: () => {} },
+    on: () => {},
+    effect: () => () => {},
+    get: (n) => (n === 'settings' ? svcScoped : undefined),
+    inject: (_deps, cb) => { queueMicrotask(() => { try { cb({ settings: svcScoped, effect: ctxScoped.effect }) } catch { /* cordis 静默吞 */ } }) },
+  }
+  await apply(ctxScoped, { enabled: true, projectDir: '.dsh-personal-memory' })
+  const scopedRow = svcScoped.describe().find((r) => r.ns === '@cmjt/dsh-personal-memory')
+  check('scoped: describe 壳按指纹命中行、value 现场重算=base⊕user',
+    scopedRow.value.homeDir === 'dsh-storage' && scopedRow.value.hitTopK === 2, JSON.stringify(scopedRow.value))
+  check('scoped: homeDirPresets 注入 base、不进 value',
+    typeof scopedRow.base.homeDirPresets === 'object' && scopedRow.value.homeDirPresets === undefined,
+    JSON.stringify({ b: typeof scopedRow.base.homeDirPresets, v: scopedRow.value.homeDirPresets }))
+  check('scoped: 非我方命名空间原样透传', svcScoped.describe()[1].base.homeDirPresets === undefined, '')
+  await svcScoped.write('@cmjt/dsh-personal-memory', () => ({}))
+  check('scoped: write 门禁认 scoped 条目 id（热切换链路不炸）', svcScoped.wrote === '@cmjt/dsh-personal-memory', svcScoped.wrote ?? '')
+  await svcScoped.write('other-ns', () => ({}))
+  check('scoped: 非我方 ns 写入不触发钩子分支（链路安全）', svcScoped.wrote === 'other-ns', svcScoped.wrote ?? '')
+}
+
 // disabled
 const { ctx: ctxOff, tools: toolsOff, handlers: handlersOff } = makeCtx()
 await apply(ctxOff, { enabled: false })
@@ -2402,6 +2439,7 @@ rmSync(wsIcon, { recursive: true, force: true })
   const pkgName = JSON.parse(readFileSync('package.json', 'utf8')).name
   const cli = readFileSync('lib/client.js', 'utf8')
   check('gate: 客户端注册 ID = package name', cli.includes(`id: ${JSON.stringify(pkgName)}`), `pkg=${pkgName}`)
+  check('gate: banner 注入包名常量（设置条目候选源）', cli.includes(`var __DPM_PACKAGE_NAME__ = ${JSON.stringify(pkgName)}`), `pkg=${pkgName}`)
   check('gate: 注册 ID 只声明一次', (cli.match(/window\.__ModuleLoader__\.load\(\{/g) ?? []).length === 1)
   const patchYml = readFileSync('cordis.patch.yml', 'utf8')
   const esc = pkgName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')

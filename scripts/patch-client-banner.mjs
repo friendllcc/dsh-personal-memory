@@ -14,6 +14,7 @@ const banner = [
   'window.__ModuleLoader__.load({',
   `  id: ${JSON.stringify(JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).name)},`,
   '  factory: (require) => {',
+  `    var __DPM_PACKAGE_NAME__ = ${JSON.stringify(JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).name)};`,
   '    var module = { exports: {} };',
   '    var exports = module.exports;',
   '',

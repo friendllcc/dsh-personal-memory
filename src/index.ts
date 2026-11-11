@@ -324,6 +324,37 @@ export { config as Config }
 
 export const SETTINGS_NS = 'dsh-personal-memory'
 
+/** 0.1.7 设置域条目 id（= profile 条目 id）：scoped 私有源安装时为包名
+ *  `@cmjt/dsh-personal-memory`（cordis.patch insert 行的 id），旧 link/tgz 安装时
+ *  为旧名 `dsh-personal-memory`。describe 行扫描发现并缓存（见 findOurSettingsRow），
+ *  0.1.7 各壳（describe 合并 / settingsGet / write 门禁）都读它，不再硬编码。
+ *  0.1.6 腿不受影响：命名空间由本插件自己注册（SETTINGS_NS），恒为旧名。 */
+let settingsEntryNs: string | null = null
+
+/** describe 行是否本插件的表单：value/base/user/schema 任一含 hitTopK 键——
+ *  本插件 Config 独有字段名，其他插件不会有。 */
+function isOurSettingsRow(row: unknown): boolean {
+  if (row === null || typeof row !== 'object') return false
+  const r = row as Record<string, unknown>
+  for (const key of ['value', 'base', 'user', 'schema']) {
+    const v = r[key]
+    if (v !== null && typeof v === 'object' && Object.prototype.hasOwnProperty.call(v, 'hitTopK')) return true
+  }
+  return false
+}
+
+/** describe 行里找本插件行（先按 hitTopK 指纹——scoped 条目 id 不认识也能命中；
+ *  再按旧名兜底——老测试/mock 行没有 hitTopK 时仍走旧逻辑），命中即缓存条目 id。 */
+function findOurSettingsRow(rows: unknown): Record<string, unknown> | undefined {
+  if (!Array.isArray(rows)) return undefined
+  const row = rows.find((r) => isOurSettingsRow(r))
+    ?? rows.find((r) => (r as Record<string, unknown>)?.ns === SETTINGS_NS)
+  if (row === undefined) return undefined
+  const ns = (row as Record<string, unknown>).ns
+  if (typeof ns === 'string' && ns !== '') settingsEntryNs = ns
+  return row as Record<string, unknown>
+}
+
 /** 出厂默认值定义已抽到 defaults.ts（host/client 共用，理由见该文件头注释）；
  *  设置页 base（预填层）=出厂默认 + patch 基线，promptLang 刻意缺席=未设置语义。 */
 export { CONFIG_DEFAULTS, factoryDefaultOf } from './defaults.js'
@@ -940,7 +971,7 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
                 nsList: Array.isArray(view) ? view.map((row: any) => row?.ns) : null,
               }
               appendFileSync(diagFile, `[${new Date().toISOString()}] describe shape: ${JSON.stringify(info)}\n`)
-              const meowRow = Array.isArray(view) ? view.find((row: any) => row?.ns === 'dsh-personal-memory') : undefined
+              const meowRow = findOurSettingsRow(view)
               if (meowRow !== undefined) {
                 appendFileSync(diagFile, `[${new Date().toISOString()}] meow view: ${JSON.stringify({
                   revision: meowRow.revision,
@@ -998,7 +1029,7 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
               const rows = rawDescribe(...args) as Array<Record<string, unknown>>
               try {
                 if (Array.isArray(rows)) {
-                  const row = rows.find((r) => r?.ns === SETTINGS_NS) as
+                  const row = findOurSettingsRow(rows) as
                     | { base?: Record<string, unknown>; user?: Record<string, unknown>; value?: unknown }
                     | undefined
                   if (row !== undefined && row.base !== undefined && row.base !== null && typeof row.base === 'object') {
@@ -1019,7 +1050,7 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
             // resolveConfig 等待与热切换都从这读，等价 0.1.6 的 scope.get()。
             settingsGet = (): unknown => {
               const rows = (svcAny.describe as (...args: unknown[]) => unknown)() as Array<Record<string, unknown>>
-              const row = Array.isArray(rows) ? rows.find((r) => r?.ns === SETTINGS_NS) : undefined
+              const row = findOurSettingsRow(rows)
               return row?.value
             }
             markSourceReady?.()
@@ -1027,11 +1058,24 @@ async function applyInner(ctx: Context, config: unknown): Promise<void> {
           if (proto !== null && typeof proto.write === 'function' && proto.__meowWriteHook !== true) {
             proto.__meowWriteHook = true
             const rawWriteHooked = (proto.write as (...args: unknown[]) => unknown).bind(svcAny)
+            // 本插件条目 id 判定（scoped 安装 ns=包名、旧安装=旧名，二者都认）：
+            // 缓存命中短路；首次遇到未知 ns 时按 hitTopK 指纹现场扫描 describe 行。
+            const isOurNs = (ns: string): boolean => {
+              if (ns === SETTINGS_NS || ns === settingsEntryNs) return true
+              if (settingsEntryNs !== null) return false
+              try {
+                const rows = (svcAny.describe as (...args: unknown[]) => unknown)() as unknown[]
+                const row = Array.isArray(rows) ? rows.find((r) => (r as Record<string, unknown>)?.ns === ns) : undefined
+                return row !== undefined && isOurSettingsRow(row)
+              } catch {
+                return false
+              }
+            }
             proto.write = (...args: unknown[]): unknown => {
               const result = rawWriteHooked(...args)
               if (result instanceof Promise) {
                 return result.then((v: unknown) => {
-                  if (String(args[0]) === SETTINGS_NS) {
+                  if (isOurNs(String(args[0]))) {
                     ctx.logger.info('dsh-personal-memory: 配置已通过设置页更新（热字段即时生效；注册期字段重载/重启插件后生效）')
                     hotSwitchHomeDir(ctx, config, settingsGet)
                     // promptLang 热字段刷新（issue #26）——0.1.7 无 installSection，
